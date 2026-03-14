@@ -246,10 +246,21 @@ async fn cmd_status(config: aegis::config::schema::AegisConfig) -> Result<()> {
             }
             _ => {}
         }
+        // Check if the daemon is actually running via systemd.
+        state_guard.daemon_running = is_daemon_running();
     }
     let state_guard = state.read().await;
     output::print_status(&state_guard);
     Ok(())
+}
+
+/// Check if the aegis systemd service is active.
+fn is_daemon_running() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["is-active", "--quiet", "aegis"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// List active threat events.
