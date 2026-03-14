@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Aegis installer — downloads the latest release binary from GitHub and installs it.
-# Usage: curl -fsSL https://raw.githubusercontent.com/OWNER/aegis/master/install.sh | sudo bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
 
 REPO="ChristosG/aegis"
 INSTALL_DIR="/usr/local/bin"
