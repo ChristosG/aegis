@@ -1,0 +1,32 @@
+[Unit]
+Description=Aegis Linux Security Monitor
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/aegis watch --foreground
+Restart=on-failure
+RestartSec=10
+User=root
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/log /root/.aegis
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Allow necessary capabilities
+AmbientCapabilities=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_KILL
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aegis
+
+[Install]
+WantedBy=multi-user.target

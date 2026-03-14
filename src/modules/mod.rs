@@ -1,0 +1,94 @@
+pub mod auth;
+pub mod file_integrity;
+pub mod network;
+pub mod process;
+pub mod threat_intel;
+pub mod web;
+
+use std::sync::Arc;
+
+use anyhow::Result;
+use async_trait::async_trait;
+
+use crate::config::schema::AegisConfig;
+use crate::core::threat::ThreatEvent;
+
+/// Trait that all security scanning modules must implement.
+///
+/// Each module can perform a one-shot scan (returning a list of threats)
+/// and/or run a continuous watch loop (for daemon mode).
+#[async_trait]
+pub trait ScanModule: Send + Sync {
+    /// The human-readable name of this module (e.g., "network", "process").
+    fn name(&self) -> &str;
+
+    /// Run a one-shot scan and return any detected threats.
+    async fn scan(&self) -> Result<Vec<ThreatEvent>>;
+
+    /// Start a continuous watch loop. The default implementation simply
+    /// calls `scan()` once, since not all modules support watch mode.
+    /// Modules that support real-time monitoring (e.g., file_integrity with inotify)
+    /// should override this.
+    async fn watch(
+        &self,
+        tx: tokio::sync::mpsc::Sender<ThreatEvent>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<()> {
+        // Default: run a single scan and forward results
+        let threats = self.scan().await?;
+        for threat in threats {
+            let _ = tx.send(threat).await;
+        }
+
+        // Then wait for cancellation
+        cancel.cancelled().await;
+        Ok(())
+    }
+
+    /// Whether this module supports continuous watch mode.
+    fn supports_watch(&self) -> bool {
+        false
+    }
+}
+
+/// Create all enabled modules based on configuration.
+/// Returns Arc-wrapped modules so they can be shared with daemon watch tasks.
+pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
+    let mut modules: Vec<Arc<dyn ScanModule>> = Vec::new();
+
+    for module_name in &config.general.modules {
+        match module_name.as_str() {
+            "network" if config.network.enabled => {
+                modules.push(Arc::new(network::NetworkModule::new(
+                    config.network.clone(),
+                )));
+            }
+            "process" if config.process.enabled => {
+                modules.push(Arc::new(process::ProcessModule::new(
+                    config.process.clone(),
+                )));
+            }
+            "file_integrity" if config.file_integrity.enabled => {
+                modules.push(Arc::new(file_integrity::FileIntegrityModule::new(
+                    config.file_integrity.clone(),
+                )));
+            }
+            "auth" if config.auth.enabled => {
+                modules.push(Arc::new(auth::AuthModule::new(config.auth.clone())));
+            }
+            "web" if config.web.enabled => {
+                modules.push(Arc::new(web::WebModule::new(config.web.clone())));
+            }
+            "threat_intel" if config.threat_intel.enabled => {
+                modules.push(Arc::new(threat_intel::ThreatIntelModule::new(
+                    config.threat_intel.clone(),
+                )));
+            }
+            name => {
+                tracing::warn!(module = name, "Unknown or disabled module, skipping");
+            }
+        }
+    }
+
+    modules
+}
