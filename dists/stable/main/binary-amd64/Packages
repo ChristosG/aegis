@@ -1,8 +1,8 @@
 Package: aegis
-Version: 0.11.1-1
+Version: 0.12.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 9318
+Installed-Size: 9336
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis-full
@@ -10,21 +10,21 @@ Replaces: aegis-full
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis/aegis_0.11.1-1_amd64.deb
-Size: 3291512
-SHA256: 0752a82551920b5da1db7317fcc94a59d1470e55e897b3e3795ccb74b7e87a58
-SHA1: 58ab29b641f48f7a47d0c66c3217080038b08de9
-MD5sum: da6e8a2e0c732078fcdd2493a401e189
+Filename: pool/main/a/aegis/aegis_0.12.0-1_amd64.deb
+Size: 3298824
+SHA256: 439c7e3a122f297c9c1aaf48a2536401fb36b23258c48fa799cd51d7bf3ee414
+SHA1: a69af7dc50cf7f01268dc581d529e361435a91e8
+MD5sum: ff16ec2ba3773146741c395aac8c0d70
 Description: Linux Security Monitoring & Response Tool
  Aegis monitors your Linux server for network attacks, malware, brute-force
  attempts, file tampering, web exploits, and known-malicious IPs, then
  automatically blocks them. Single static binary.
 
 Package: aegis-full
-Version: 0.11.1-1
+Version: 0.12.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 11040
+Installed-Size: 11059
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis
@@ -32,11 +32,11 @@ Replaces: aegis
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis-full/aegis-full_0.11.1-1_amd64.deb
-Size: 3729212
-SHA256: 208667ebea781d7942b0c3fc48028f247e619ccbe66388437b5cefc7091dd6d2
-SHA1: ecffb21506bcc3bafad1b3c50215bf305b7754af
-MD5sum: 6e6b99b95c8fef3a65787bb894e494af
+Filename: pool/main/a/aegis-full/aegis-full_0.12.0-1_amd64.deb
+Size: 3734764
+SHA256: fc4d4a8a66b9262ee1b086d827908f22ed61591a0757c15e54f67f82113b6456
+SHA1: 7b8f84c6963c3531c6661d7657f10115563bf9ba
+MD5sum: 2cf0c9b2a560a7549d76213331988123
 Description: Linux Security Monitoring & Response Tool
  Aegis with web dashboard. Monitors your Linux server for network attacks,
  malware, brute-force attempts, file tampering, web exploits, and
