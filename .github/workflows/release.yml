@@ -176,7 +176,16 @@ jobs:
       - name: Import GPG key
         env:
           GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          # Configure GPG for non-interactive signing in CI
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg-agent.conf
+          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
+          if [ -n "$GPG_PASSPHRASE" ]; then
+            echo "passphrase $GPG_PASSPHRASE" >> ~/.gnupg/gpg.conf
+          fi
+          gpgconf --kill gpg-agent
 
       - name: Fetch existing repo
         run: |
