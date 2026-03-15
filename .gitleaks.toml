@@ -1,0 +1,22 @@
+title = "Aegis gitleaks config"
+
+[allowlist]
+description = "Allowlisted patterns for Aegis codebase"
+
+# Struct field names, config schema keys, sanitization code, and placeholder values
+paths = [
+    '''.github/badges/tests\.json''',
+]
+
+regexTarget = "match"
+regexes = [
+    # Config field names in Rust code (smtp_password, bot_token, api_key, etc.)
+    '''\"(smtp_password|bot_token|api_key|webhook_url|maxmind_license_key|token_file)\"''',
+    # Placeholder / example domains
+    '''smtp\.example\.com''',
+    '''yourdomain\.com''',
+    # Masking logic that references "***"
+    '''"?\*\*\*"?''',
+    # Env var names (not values)
+    '''AEGIS_SMTP_PASSWORD|AEGIS_TELEGRAM_BOT_TOKEN|SMTP_PASSWORD''',
+]

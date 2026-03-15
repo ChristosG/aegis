@@ -87,12 +87,11 @@ fi
 # --- Config ---
 mkdir -p "$CONFIG_DIR"
 if [ -f "${CONFIG_DIR}/aegis.toml" ] && [ -f "${TMP}/aegis.toml" ]; then
-    # Upgrade: back up old config and install new one
-    BACKUP="${CONFIG_DIR}/aegis.toml.bak.$(date +%s)"
-    cp "${CONFIG_DIR}/aegis.toml" "$BACKUP"
-    install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml"
-    info "Config updated (backup: $BACKUP)"
-    warn "Review ${CONFIG_DIR}/aegis.toml and re-apply any custom settings from the backup"
+    # Upgrade: preserve user config, install new default as reference
+    install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml.new"
+    info "User config preserved at ${CONFIG_DIR}/aegis.toml"
+    info "New default config saved to ${CONFIG_DIR}/aegis.toml.new (for reference)"
+    warn "If the new version adds config options, merge them from aegis.toml.new into your aegis.toml"
 elif [ ! -f "${CONFIG_DIR}/aegis.toml" ] && [ -f "${TMP}/aegis.toml" ]; then
     install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml"
     info "Default config installed to ${CONFIG_DIR}/aegis.toml"

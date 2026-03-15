@@ -22,6 +22,18 @@
   <img alt="unsafe" src="https://img.shields.io/badge/unsafe-forbidden-red">
 </p>
 
+<h4 align="center">Get Aegis running in 30 seconds</h4>
+
+**CLI only** — terminal monitoring & automated response:
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
+```
+
+**Full install** — includes the web dashboard:
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
+```
+
 ---
 
 ## Why Aegis?

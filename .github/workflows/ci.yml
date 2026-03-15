@@ -81,14 +81,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
 
-      - name: Run audit
+      - name: Run cargo audit
         run: cargo audit
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
 
   build:
     name: Build release

@@ -95,6 +95,38 @@ function toggleSidebar() {
     }
 })();
 
+// === Threat Type Explanations ===
+var THREAT_EXPLANATIONS = {
+    'syn_flood': 'High volume of half-open TCP connections (SYN without ACK). Indicates a SYN flood denial-of-service attack targeting your server.',
+    'port_scan': 'A single IP is probing multiple ports on your server, typically to discover running services before an attack.',
+    'suspicious_connection': 'An outbound connection to an unusual or unexpected destination that doesn\'t match normal traffic patterns.',
+    'c2_beacon': 'Regular, periodic outbound connections to the same host — a pattern used by malware to check in with a command-and-control server.',
+    'crypto_miner': 'A process is using excessive CPU in a pattern consistent with cryptocurrency mining software.',
+    'reverse_shell': 'A process has redirected its stdin/stdout to a network socket — classic indicator of a reverse shell backdoor.',
+    'suspicious_binary': 'An executable is running from a temporary or world-writable directory (/tmp, /dev/shm) where binaries shouldn\'t normally run.',
+    'brute_force': 'Multiple failed login attempts from the same IP in a short window, indicating a password-guessing attack.',
+    'root_login': 'A successful login to the root account was detected. This may be expected or may indicate compromise.',
+    'login_anomaly': 'A login event that doesn\'t match established patterns — unusual user, unexpected authentication method, or first-time access.',
+    'file_modified': 'A monitored system file was changed. Could be a legitimate update or unauthorized tampering.',
+    'file_added': 'A new file appeared in a monitored directory. Check if it\'s from a legitimate package update.',
+    'file_deleted': 'A monitored system file was removed. Could indicate tampering or cleanup by an attacker.',
+    'scanner_probe': 'HTTP requests matching known vulnerability scanner signatures (nikto, sqlmap, nuclei, etc.).',
+    'web_ddos': 'An IP is sending an abnormally high rate of HTTP requests, potentially a DDoS or aggressive scraping attack.',
+    'sql_injection': 'An HTTP request contains SQL injection patterns (UNION SELECT, OR 1=1, etc.) attempting to exploit database queries.',
+    'path_traversal': 'An HTTP request contains directory traversal sequences (../) attempting to access files outside the web root.',
+    'threat_intel_match': 'An IP connected to your server that appears on one or more threat intelligence blacklists.',
+    'tor_exit': 'Traffic from a known Tor exit node. Not necessarily malicious, but often used to anonymize attacks.',
+    'unusual_login_time': 'A user logged in outside the configured normal hours. May indicate a compromised account being used by an attacker in a different timezone.',
+    'cron_modified': 'A cron job file was changed. Attackers commonly install cron persistence to survive reboots.',
+    'sudoers_modified': 'The sudoers configuration was altered. Could indicate privilege escalation setup by an attacker.',
+    'new_user_created': 'A new user account was created on the system. Verify this was intentional.',
+    'honeypot_connection': 'An IP connected to a honeypot port — a decoy service with no legitimate use. This is almost certainly malicious probing.',
+    'connection_rate_exceeded': 'An IP exceeded the configured connection rate limit. May indicate scanning, brute-force, or DDoS activity.',
+    'cert_expiring_soon': 'A monitored TLS certificate is approaching its expiry date and needs renewal.',
+    'kernel_module_loaded': 'A kernel module was loaded. Rootkits often use kernel modules to hide their presence.',
+    'new_outbound_destination': 'Your server connected to an IP/port it hasn\'t contacted before. Could be normal (new dependency) or malware reaching out. Not from your browser — this is server-level network activity.'
+};
+
 // === Sort & Filter State ===
 var sortState = {};
 var currentFilter = null;
@@ -568,6 +600,11 @@ function buildDashboardRow(t) {
 
     var tdType = document.createElement('td');
     tdType.textContent = formatThreatType(t.threat_type);
+    var typeExplain = THREAT_EXPLANATIONS[t.threat_type];
+    if (typeExplain) {
+        tdType.className = 'has-tooltip';
+        tdType.setAttribute('data-tooltip', typeExplain);
+    }
     tr.appendChild(tdType);
 
     var tdDesc = document.createElement('td');
@@ -607,6 +644,11 @@ function buildThreatsPageRow(t) {
 
     var tdType = document.createElement('td');
     tdType.textContent = formatThreatType(t.threat_type);
+    var typeExplain2 = THREAT_EXPLANATIONS[t.threat_type];
+    if (typeExplain2) {
+        tdType.className = 'has-tooltip';
+        tdType.setAttribute('data-tooltip', typeExplain2);
+    }
     tr.appendChild(tdType);
 
     var tdDesc = document.createElement('td');
@@ -739,6 +781,11 @@ function executeScan(modules) {
 
                     var tdType = document.createElement('td');
                     tdType.textContent = formatThreatType(t.threat_type);
+                    var scanExplain = THREAT_EXPLANATIONS[t.threat_type];
+                    if (scanExplain) {
+                        tdType.className = 'has-tooltip';
+                        tdType.setAttribute('data-tooltip', scanExplain);
+                    }
                     tr.appendChild(tdType);
 
                     var tdIp = document.createElement('td');
@@ -1324,6 +1371,18 @@ function localizeTimestamps() {
     });
 }
 localizeTimestamps();
+
+// === Add threat type tooltips to server-rendered rows ===
+(function() {
+    document.querySelectorAll('tr[data-threat-type]').forEach(function(row) {
+        var typeKey = row.getAttribute('data-threat-type');
+        var explain = THREAT_EXPLANATIONS[typeKey];
+        if (explain && row.cells[1] && !row.cells[1].getAttribute('data-tooltip')) {
+            row.cells[1].className = (row.cells[1].className || '') + ' has-tooltip';
+            row.cells[1].setAttribute('data-tooltip', explain);
+        }
+    });
+})();
 
 // === Config page toggle sections ===
 function toggleConfigSection(el) {
