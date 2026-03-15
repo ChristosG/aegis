@@ -146,6 +146,10 @@ impl ThreatIntelModule {
     }
 
     /// Parse all cached feeds into an IpLookup structure.
+    ///
+    /// Feed names are interned (stored once, referenced by u8 index) to avoid
+    /// cloning a String per IP. All CIDR ranges are stored as CIDRs rather than
+    /// enumerating individual host IPs, which dramatically reduces memory usage.
     fn build_ip_lookup(&self) -> Result<IpLookup> {
         let mut lookup = IpLookup::new();
 
@@ -179,6 +183,9 @@ impl ThreatIntelModule {
                 }
             };
 
+            // Intern this feed's name once — all entries share the same u8 index.
+            let feed_idx = lookup.intern_feed(feed_name);
+
             let mut count = 0u64;
             for line in content.lines() {
                 let line = line.trim();
@@ -196,30 +203,13 @@ impl ThreatIntelModule {
                     continue;
                 }
 
-                // Try parsing as CIDR first, then as plain IP
+                // Try parsing as CIDR first, then as plain IP.
+                // All CIDRs are stored as ranges — no host enumeration.
                 if token.contains('/') {
                     match token.parse::<IpNet>() {
                         Ok(network) => {
-                            // For small networks, enumerate IPs; for large ones, just
-                            // add the network address as a representative.
-                            let prefix_len = match network {
-                                IpNet::V4(net) => net.prefix_len(),
-                                IpNet::V6(net) => net.prefix_len(),
-                            };
-
-                            // Only enumerate for /24 and smaller (up to 256 IPs for v4)
-                            if (network.addr().is_ipv4() && prefix_len >= 24)
-                                || (network.addr().is_ipv6() && prefix_len >= 120)
-                            {
-                                for ip in network.hosts() {
-                                    lookup.insert(ip, feed_name.clone(), feed_config.weight);
-                                    count += 1;
-                                }
-                            } else {
-                                // For larger ranges, store as CIDR for containment checks
-                                lookup.insert_cidr(network, feed_name.clone(), feed_config.weight);
-                                count += 1;
-                            }
+                            lookup.insert_cidr(network, feed_idx, feed_config.weight);
+                            count += 1;
                         }
                         Err(e) => {
                             debug!(
@@ -233,7 +223,7 @@ impl ThreatIntelModule {
                 } else {
                     match token.parse::<IpAddr>() {
                         Ok(ip) => {
-                            lookup.insert(ip, feed_name.clone(), feed_config.weight);
+                            lookup.insert(ip, feed_idx, feed_config.weight);
                             count += 1;
                         }
                         Err(e) => {
@@ -256,7 +246,8 @@ impl ThreatIntelModule {
         }
 
         info!(
-            total_ips = lookup.len(),
+            individual_ips = lookup.len(),
+            cidr_ranges = lookup.cidr_count(),
             "Built threat intel IP lookup table"
         );
 

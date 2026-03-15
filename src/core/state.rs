@@ -35,75 +35,106 @@ pub struct BlockEntry {
 pub type FileBaseline = HashMap<PathBuf, String>;
 
 /// IP lookup set for threat intelligence: stores known-bad IPs and their feed source/weight.
+///
+/// Feed names are interned into a name table to avoid cloning strings per-IP.
+/// All CIDR ranges (including /24s) are stored as CIDRs rather than enumerated
+/// into individual IPs, drastically reducing memory usage.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct IpLookup {
-    /// Maps IP addresses to a list of (feed_name, weight) pairs.
-    pub entries: HashMap<IpAddr, Vec<(String, u32)>>,
-    /// CIDR ranges too large to enumerate (e.g. /16). Checked via linear scan.
+    /// Interned feed names: index → name. Keeps one copy of each string.
+    feed_names: Vec<String>,
+    /// Individual IPs: maps to a list of (feed_index, weight) pairs.
+    entries: HashMap<IpAddr, Vec<(u8, u32)>>,
+    /// CIDR ranges checked via linear scan on lookup.
     #[serde(skip)]
-    pub cidrs: Vec<(IpNet, String, u32)>,
+    cidrs: Vec<(IpNet, u8, u32)>,
 }
 
 impl IpLookup {
     pub fn new() -> Self {
         Self {
+            feed_names: Vec::new(),
             entries: HashMap::new(),
             cidrs: Vec::new(),
         }
     }
 
+    /// Return (or create) the interned index for a feed name.
+    pub fn intern_feed(&mut self, name: &str) -> u8 {
+        if let Some(idx) = self.feed_names.iter().position(|n| n == name) {
+            idx as u8
+        } else {
+            let idx = self.feed_names.len();
+            assert!(idx < 256, "More than 255 feeds is not supported");
+            self.feed_names.push(name.to_string());
+            idx as u8
+        }
+    }
+
+    /// Resolve a feed index back to its name.
+    pub fn feed_name(&self, idx: u8) -> &str {
+        &self.feed_names[idx as usize]
+    }
+
     /// Check if an IP is in any threat feed. Returns the maximum weight if found.
     pub fn lookup(&self, ip: &IpAddr) -> Option<u32> {
+        let mut max_w: Option<u32> = None;
+
         if let Some(feeds) = self.entries.get(ip) {
-            return Some(feeds.iter().map(|(_, w)| *w).max().unwrap_or(0));
+            max_w = feeds.iter().map(|&(_, w)| w).max();
         }
-        // Fall back to CIDR containment check
-        let max_w = self
-            .cidrs
-            .iter()
-            .filter(|(cidr, _, _)| cidr.contains(ip))
-            .map(|(_, _, w)| *w)
-            .max();
+
+        for &(ref cidr, _, w) in &self.cidrs {
+            if cidr.contains(ip) {
+                max_w = Some(max_w.map_or(w, |prev| prev.max(w)));
+            }
+        }
+
         max_w
     }
 
-    /// Look up an IP and return the max weight plus feed details.
+    /// Look up an IP and return the max weight plus feed details (resolved names).
     pub fn lookup_with_details(&self, ip: &IpAddr) -> Option<(u32, Vec<(String, u32)>)> {
+        let mut results: Vec<(String, u32)> = Vec::new();
+
         if let Some(feeds) = self.entries.get(ip) {
-            let max_w = feeds.iter().map(|(_, w)| *w).max().unwrap_or(0);
-            return Some((max_w, feeds.clone()));
+            for &(idx, w) in feeds {
+                results.push((self.feed_names[idx as usize].clone(), w));
+            }
         }
-        // Fall back to CIDR containment check
-        let matches: Vec<(String, u32)> = self
-            .cidrs
-            .iter()
-            .filter(|(cidr, _, _)| cidr.contains(ip))
-            .map(|(_, name, w)| (name.clone(), *w))
-            .collect();
-        if matches.is_empty() {
+
+        for &(ref cidr, idx, w) in &self.cidrs {
+            if cidr.contains(ip) {
+                results.push((self.feed_names[idx as usize].clone(), w));
+            }
+        }
+
+        if results.is_empty() {
             None
         } else {
-            let max_w = matches.iter().map(|(_, w)| *w).max().unwrap_or(0);
-            Some((max_w, matches))
+            let max_w = results.iter().map(|(_, w)| *w).max().unwrap_or(0);
+            Some((max_w, results))
         }
     }
 
-    /// Add an IP with its associated feed name and weight.
-    pub fn insert(&mut self, ip: IpAddr, feed_name: String, weight: u32) {
-        self.entries
-            .entry(ip)
-            .or_default()
-            .push((feed_name, weight));
+    /// Add an individual IP with its feed index and weight.
+    pub fn insert(&mut self, ip: IpAddr, feed_idx: u8, weight: u32) {
+        self.entries.entry(ip).or_default().push((feed_idx, weight));
     }
 
-    /// Add a CIDR range with its associated feed name and weight.
-    pub fn insert_cidr(&mut self, cidr: IpNet, feed_name: String, weight: u32) {
-        self.cidrs.push((cidr, feed_name, weight));
+    /// Add a CIDR range with its feed index and weight.
+    pub fn insert_cidr(&mut self, cidr: IpNet, feed_idx: u8, weight: u32) {
+        self.cidrs.push((cidr, feed_idx, weight));
     }
 
-    /// Total number of unique IPs across all feeds.
+    /// Total number of unique individual IPs (excludes CIDR ranges).
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Total number of CIDR ranges stored.
+    pub fn cidr_count(&self) -> usize {
+        self.cidrs.len()
     }
 
     /// Whether the lookup table is empty.
@@ -496,11 +527,22 @@ mod tests {
 
         assert!(lookup.lookup(&ip).is_none());
 
-        lookup.insert(ip, "firehol".into(), 90);
-        lookup.insert(ip, "spamhaus".into(), 95);
+        let fh = lookup.intern_feed("firehol");
+        let sp = lookup.intern_feed("spamhaus");
+        lookup.insert(ip, fh, 90);
+        lookup.insert(ip, sp, 95);
 
         assert_eq!(lookup.lookup(&ip), Some(95));
         assert_eq!(lookup.len(), 1);
+
+        // Verify feed name resolution
+        assert_eq!(lookup.feed_name(fh), "firehol");
+        assert_eq!(lookup.feed_name(sp), "spamhaus");
+
+        // Verify lookup_with_details returns resolved names
+        let (max_w, details) = lookup.lookup_with_details(&ip).unwrap();
+        assert_eq!(max_w, 95);
+        assert_eq!(details.len(), 2);
     }
 
     #[test]
