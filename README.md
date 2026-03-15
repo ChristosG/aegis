@@ -216,6 +216,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable aegis
 ```
 
+### Uninstall
+
+Completely remove aegis and all its artifacts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash
+```
+
+Or skip confirmation prompts:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
+```
+
+This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sysctl hardening, and fail2ban integration. You'll be prompted before deleting config (`/etc/aegis/`) and data (`~/.aegis/`) directories.
+
 ### Requirements
 
 - Linux kernel 3.x+ (for `/proc` and inotify support)

@@ -77,7 +77,7 @@ jobs:
           TARBALL="${{ matrix.prefix }}-${TAG}-${{ matrix.target }}.tar.gz"
           tar -czf "$TARBALL" \
             -C target/${{ matrix.target }}/release aegis \
-            -C "$GITHUB_WORKSPACE" aegis.service aegis.toml
+            -C "$GITHUB_WORKSPACE" aegis.service aegis.toml uninstall.sh
           echo "TARBALL=$TARBALL" >> $GITHUB_ENV
           echo "TAG=$TAG" >> $GITHUB_ENV
 
