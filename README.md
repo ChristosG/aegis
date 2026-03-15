@@ -18,7 +18,7 @@
   <img alt="Language" src="https://img.shields.io/badge/language-Rust-orange">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-green">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-116%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-123%20passing-brightgreen">
   <img alt="unsafe" src="https://img.shields.io/badge/unsafe-forbidden-red">
 </p>
 
@@ -30,7 +30,7 @@ After spending days manually defending a Linux web server against a botnet SYN f
 
 Aegis is what you get when incident response hardens into permanent infrastructure.
 
-**Think lightweight OSSEC/Wazuh alternative** &mdash; zero runtime dependencies, ~7 MB binary, installs in seconds, detects real threats in milliseconds.
+Zero runtime dependencies, ~7.6 MB binary, installs in seconds, detects real threats in milliseconds.
 
 ```
 $ sudo aegis scan
@@ -82,6 +82,9 @@ $ sudo aegis scan
   - [Web Module](#web-module)
   - [File Integrity Module](#file-integrity-module)
   - [Threat Intelligence Module](#threat-intelligence-module)
+  - [Anomaly Detection Module](#anomaly-detection-module)
+  - [Honeypot Module](#honeypot-module)
+  - [Certificate Monitoring Module](#certificate-monitoring-module)
 - [Automated Response](#automated-response)
   - [Response Actions](#response-actions)
   - [Firewall Backends](#firewall-backends)
@@ -91,6 +94,9 @@ $ sudo aegis scan
   - [JSON Log File](#json-log-file)
   - [Email Alerts](#email-alerts)
   - [Webhook Alerts](#webhook-alerts)
+  - [Slack Alerts](#slack-alerts)
+  - [Telegram Alerts](#telegram-alerts)
+- [Web Dashboard](#web-dashboard)
 - [Configuration Reference](#configuration-reference)
 - [Threat Reference](#threat-reference)
 - [Architecture](#architecture)
@@ -114,15 +120,21 @@ $ sudo aegis scan
 | **Web** | Nginx log analysis for DDoS, SQL injection, path traversal, vulnerability scanners |
 | **File Integrity** | SHA-256 baseline comparison with optional real-time inotify monitoring |
 | **Threat Intel** | Cross-references active connections against 6 curated blocklists |
+| **Anomaly** | Unusual login times, cron/sudoers changes, new user accounts, kernel module integrity |
+| **Honeypot** | Decoy port listeners with automatic IP blocking on connection |
+| **Cert Monitoring** | TLS certificate expiry monitoring with configurable warning threshold |
+| **Web Dashboard** | Real-time security dashboard with 6 pages, WebSocket live feed, token auth (opt-in) |
 | **Auto-Response** | Blocks IPs via iptables/nftables/ufw, kills malicious processes |
 | **Threat Dedup** | Cross-run deduplication with configurable TTL &mdash; same threat won't re-alert within the window |
 | **JSONL Logging** | All threats persisted to `~/.aegis/threats.jsonl` for history, reports, and `aegis threats` |
-| **Alerting** | Terminal, JSON log, SMTP email, Slack/Discord webhooks |
+| **Alerting** | Terminal, JSON log, SMTP email, Slack, Telegram, webhooks |
+| **Connection Rate** | Per-IP connection rate monitoring with configurable threshold |
+| **Outbound Anomaly** | Detects new outbound destinations not in established baseline |
 
 **Design principles:**
 - Single static binary &mdash; no Python, no JVM, no containers
 - Zero `unsafe` code &mdash; eliminates memory corruption attack surface
-- No listening sockets &mdash; zero network attack surface
+- No listening sockets in core &mdash; web dashboard is opt-in via feature flag
 - No shell invocation &mdash; all external commands use safe `Command::new()` with explicit args
 - Minimal dependencies &mdash; every crate justified and auditable
 
@@ -132,7 +144,7 @@ $ sudo aegis scan
 
 ```bash
 # Build
-git clone https://github.com/yourusername/aegis.git
+git clone https://github.com/chrismannina/aegis.git
 cd aegis
 cargo build --release
 
@@ -156,7 +168,7 @@ sudo ./target/release/aegis watch --foreground
 ### From source (recommended)
 
 ```bash
-git clone https://github.com/yourusername/aegis.git
+git clone https://github.com/chrismannina/aegis.git
 cd aegis
 cargo build --release
 ```
@@ -440,6 +452,28 @@ Skips: Private IPs
 Includes: Remote IP:port, connection count
 ```
 
+#### Connection Rate Detection
+
+Monitors the total number of concurrent connections per remote IP. Detects distributed or aggressive connection patterns.
+
+```
+Trigger: Connections from single IP > connection_rate_threshold (default: 100)
+Severity: High
+Skips: Private IPs
+Includes: IP, connection count, threshold
+```
+
+#### New Outbound Destination Detection
+
+Maintains a baseline of known outbound destinations (IP:port pairs). Alerts when connections are made to previously unseen destinations, which may indicate new C2 channels or data exfiltration.
+
+```
+Trigger: Outbound connection to IP:port not in baseline
+Severity: Medium
+Baseline: Auto-maintained in ~/.aegis/outbound_baseline.json (capped at 5000 entries)
+Includes: Destination IP, port
+```
+
 **Configuration:**
 
 ```toml
@@ -451,6 +485,7 @@ port_scan_window = 60
 known_outbound_ports = [80, 443, 53, 22, 25, 587]
 c2_beacon_threshold = 10
 c2_beacon_window = 300
+connection_rate_threshold = 100
 ```
 
 ---
@@ -759,6 +794,114 @@ weight = 80
 
 ---
 
+### Anomaly Detection Module
+
+**Data source:** `/var/log/auth.log`, `/etc/crontab`, `/etc/sudoers`, `/etc/passwd`, `/proc/modules`
+
+Detects behavioral anomalies that may indicate compromise or unauthorized changes.
+
+#### Unusual Login Time
+
+Flags successful logins outside configured business hours. Useful for detecting compromised credentials used by attackers in different time zones.
+
+```
+Trigger: Login hour outside login_time_start..login_time_end range
+Severity: Medium
+Includes: Username, login time, configured range
+```
+
+#### Cron/Sudoers Monitoring
+
+Detects changes to scheduled task configurations and privilege escalation files. Maintains a baseline of known cron files and sudoers state, alerting on additions or modifications.
+
+```
+Trigger: New or changed crontab/sudoers file vs. baseline
+Severity: Medium (cron), High (sudoers)
+Includes: File path, change type
+```
+
+#### New User Detection
+
+Alerts on new user accounts by comparing `/etc/passwd` against a stored baseline. New accounts may indicate persistence mechanisms.
+
+```
+Trigger: Username in /etc/passwd not in baseline
+Severity: Medium
+Includes: Username
+```
+
+#### Kernel Module Integrity
+
+Compares loaded kernel modules against a baseline. New modules may indicate rootkit installation.
+
+```
+Trigger: Kernel module in /proc/modules not in baseline
+Severity: High
+Includes: Module name
+```
+
+**Configuration:**
+
+```toml
+[anomaly]
+enabled = true
+login_time_start = 6
+login_time_end = 22
+monitor_cron = true
+monitor_sudoers = true
+detect_new_users = true
+detect_kernel_modules = true
+```
+
+---
+
+### Honeypot Module
+
+**Data source:** TCP socket listeners
+
+Deploys decoy service listeners on commonly-targeted ports. Any connection to these ports is inherently suspicious since no legitimate service is running there.
+
+```
+Trigger: Any TCP connection to a honeypot port
+Severity: High
+Auto-response: Block source IP (if auto_block enabled)
+Includes: Source IP, honeypot port
+```
+
+**Configuration:**
+
+```toml
+[honeypot]
+enabled = true
+ports = [2222, 8080, 3389, 4444, 5555]
+auto_block = true
+```
+
+---
+
+### Certificate Monitoring Module
+
+**Data source:** TLS connections to configured domains
+
+Connects to configured domains and checks TLS certificate expiry dates. Alerts when certificates are approaching expiration.
+
+```
+Trigger: Certificate expires within warn_days
+Severity: Medium
+Includes: Domain, days until expiry, expiry date
+```
+
+**Configuration:**
+
+```toml
+[cert]
+enabled = true
+domains = ["example.com", "api.example.com:8443"]
+warn_days = 14
+```
+
+---
+
 ## Automated Response
 
 ### Response Actions
@@ -1006,6 +1149,81 @@ min_severity = "high"
 
 Sends a POST request with the full `ThreatEvent` serialized as JSON. 10-second timeout. Failures are logged but never block processing.
 
+### Slack Alerts
+
+Native Slack integration via incoming webhooks.
+
+```toml
+[alerting.slack]
+enabled = true
+webhook_url = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+min_severity = "high"
+```
+
+### Telegram Alerts
+
+Native Telegram integration via Bot API.
+
+```toml
+[alerting.telegram]
+enabled = true
+bot_token = "123456:ABC-DEF..."
+chat_id = "-1001234567890"
+min_severity = "high"
+```
+
+---
+
+## Web Dashboard
+
+Aegis includes an optional web-based security dashboard, enabled via feature flag:
+
+```bash
+cargo build --release --features web-dashboard
+```
+
+### Pages
+
+| Page | Description |
+|------|-------------|
+| **Dashboard** | Real-time overview with threat stats, severity breakdown, recent events |
+| **Threats** | Searchable threat log with pagination, severity filters, detail modals |
+| **Firewall** | Active blocks, whitelist management, manual block/unblock |
+| **Status** | System health, module status, security posture score |
+| **Config** | Live configuration viewer with validation |
+| **Logs** | Structured log viewer with filtering |
+
+### Features
+
+- **WebSocket live feed** — threats stream to the dashboard in real-time
+- **Token-based auth** — constant-time comparison, secure cookie storage
+- **Rate limiting** — 120 req/min for reads, 10 req/min for mutative operations
+- **CORS protection** — configurable allowed origins
+- **Mobile responsive** — works on all screen sizes
+- **PDF reports** — downloadable security reports
+
+### Running
+
+```bash
+# Start Aegis with web dashboard
+sudo aegis watch --foreground
+# Dashboard available at http://localhost:3000
+# Auth token is printed to stdout on first run
+```
+
+### API
+
+27 routes including:
+- `GET /api/threats` — threat list with search/pagination
+- `GET /api/blocks` — active firewall blocks
+- `POST /api/block` / `POST /api/unblock` — manual IP management
+- `GET /api/whitelist` — whitelist management
+- `POST /api/scan` — trigger on-demand scan
+- `GET /api/stats` — dashboard statistics
+- `GET /api/status` — system health
+- `GET /api/report` — generate report
+- `GET /ws/threats` — WebSocket live threat stream
+
 ---
 
 ## Configuration Reference
@@ -1025,7 +1243,7 @@ This creates `/etc/aegis/aegis.toml` with all options documented with comments, 
 # Aegis Security Monitor Configuration
 
 [general]
-modules = ["network", "process", "file_integrity", "auth", "web", "threat_intel"]
+modules = ["network", "process", "file_integrity", "auth", "web", "threat_intel", "anomaly", "honeypot", "cert"]
 log_level = "info"
 data_dir = "~/.aegis"
 dedup_ttl = "1h"              # Suppress duplicate threats within this window ("0s" to disable)
@@ -1038,6 +1256,7 @@ port_scan_window = 60
 known_outbound_ports = [80, 443, 53, 22, 25, 587]
 c2_beacon_threshold = 10
 c2_beacon_window = 300
+connection_rate_threshold = 100
 
 [process]
 enabled = true
@@ -1109,6 +1328,25 @@ url = "https://check.torproject.org/torbulkexitlist"
 enabled = true
 weight = 30
 
+[anomaly]
+enabled = true
+login_time_start = 6
+login_time_end = 22
+monitor_cron = true
+monitor_sudoers = true
+detect_new_users = true
+detect_kernel_modules = true
+
+[honeypot]
+enabled = true
+ports = [2222, 8080, 3389, 4444, 5555]
+auto_block = true
+
+[cert]
+enabled = true
+domains = ["example.com"]
+warn_days = 14
+
 [response]
 enabled = true
 dry_run = false
@@ -1155,6 +1393,17 @@ cooldown = "5m"
 enabled = false
 url = ""
 min_severity = "high"
+
+[alerting.slack]
+enabled = false
+webhook_url = ""
+min_severity = "high"
+
+[alerting.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+min_severity = "high"
 ```
 
 </details>
@@ -1186,6 +1435,15 @@ Complete list of all threat types Aegis can detect:
 | Path Traversal | High | web | block | Directory traversal attempt |
 | Threat Intel Match | High | threat_intel | block | IP found on threat intelligence feed |
 | Tor Exit Node | Info | threat_intel | log | Connection involving Tor exit node |
+| Unusual Login Time | Medium | anomaly | alert | Login outside configured hours |
+| Cron Modified | Medium | anomaly | alert | Crontab file added or changed |
+| Sudoers Modified | High | anomaly | alert | Sudoers configuration changed |
+| New User Created | Medium | anomaly | alert | New user account detected |
+| Honeypot Connection | High | honeypot | block | Connection to decoy port |
+| Connection Rate Exceeded | High | network | block | Too many connections from single IP |
+| Cert Expiring Soon | Medium | cert | alert | TLS certificate approaching expiry |
+| Kernel Module Loaded | High | anomaly | alert | New kernel module detected (rootkit indicator) |
+| New Outbound Destination | Medium | network | alert | Connection to previously unseen destination |
 
 ---
 
@@ -1204,7 +1462,7 @@ Complete list of all threat types Aegis can detect:
               │                 │                 │
      ┌────────▼────────┐ ┌─────▼─────┐ ┌────────▼────────┐
      │  Scan Modules   │ │ Event Bus │ │  Shared State   │
-     │  (6 modules)    │ │(broadcast)│ │ (Arc<RwLock>)   │
+     │  (10 modules)   │ │(broadcast)│ │ (Arc<RwLock>)   │
      └────────┬────────┘ └─────┬─────┘ └────────┬────────┘
               │                 │                 │
      ┌────────▼────────────────▼────────────────▼────────┐
@@ -1258,7 +1516,7 @@ Every module implements `scan()` for one-shot mode. The default `watch()` polls 
 ### Privilege Management
 
 - **Capability-aware** &mdash; Documents and supports `CAP_NET_ADMIN + CAP_DAC_READ_SEARCH + CAP_KILL` instead of full root.
-- **No listening ports** &mdash; Aegis opens zero network sockets for incoming connections. Zero attack surface.
+- **No listening ports** &mdash; Aegis core opens zero network sockets. The web dashboard is opt-in via feature flag.
 - **No `unsafe` code** &mdash; Zero `unsafe` blocks in Aegis source. Dependencies (tokio, procfs, nix) are well-audited.
 
 ### Credential Security
@@ -1341,12 +1599,12 @@ aegis scan    # Works without sudo
 ### Build
 
 ```bash
-git clone https://github.com/yourusername/aegis.git
+git clone https://github.com/chrismannina/aegis.git
 cd aegis
 cargo build --release
 ```
 
-The optimized binary is at `target/release/aegis` (~7 MB, stripped with LTO).
+The optimized binary is at `target/release/aegis` (~7.6 MB, stripped with LTO).
 
 ### Run Tests
 
@@ -1354,7 +1612,7 @@ The optimized binary is at `target/release/aegis` (~7 MB, stripped with LTO).
 cargo test
 ```
 
-116 unit tests cover:
+123 unit tests cover:
 - Config parsing and serialization round-trips
 - Threat event builder and severity ordering
 - IP parsing, CIDR matching, whitelist logic
@@ -1372,11 +1630,11 @@ cargo test
 
 ```
 Language:     Rust
-Source files: 36
-Lines of code: ~9,800
-Tests:        116
-Binary size:  ~7 MB (release, stripped)
-Dependencies: 25 direct crates
+Source files: 66
+Lines of code: ~11,200
+Tests:        123
+Binary size:  ~7.6 MB (release, stripped)
+Dependencies: 48 direct crates
 unsafe blocks: 0
 ```
 
@@ -1386,10 +1644,9 @@ unsafe blocks: 0
 
 Contributions are welcome. Areas where help is needed:
 
-- **Additional detection modules** &mdash; container escape detection, kernel module monitoring, eBPF-based packet analysis
+- **Additional detection modules** &mdash; container escape detection, eBPF-based packet analysis
 - **Log format support** &mdash; Apache, Caddy, HAProxy log parsing
 - **Additional threat feeds** &mdash; AbuseIPDB API integration, custom feed formats
-- **Dashboard** &mdash; optional web UI for real-time monitoring
 - **Packaging** &mdash; .deb, .rpm, AUR, Nix packages
 - **Testing** &mdash; integration tests with mock environments
 

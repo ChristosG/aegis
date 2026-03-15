@@ -32,10 +32,76 @@ function showResult(title, message, isError) {
     );
 }
 
+// === Keyboard: Escape closes modal ===
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        hideModal();
+        // Also close sidebar on mobile
+        var sidebar = document.getElementById('sidebar');
+        if (sidebar) sidebar.classList.remove('open');
+        var overlay = document.getElementById('sidebar-overlay');
+        if (overlay) overlay.classList.remove('open');
+    }
+});
+
+// === Mobile Sidebar Toggle ===
+function toggleSidebar() {
+    var sidebar = document.getElementById('sidebar');
+    var overlay = document.getElementById('sidebar-overlay');
+    if (sidebar) sidebar.classList.toggle('open');
+    if (overlay) overlay.classList.toggle('open');
+}
+
+// === Tooltip System (JS-managed, viewport-aware) ===
+(function() {
+    var popup = document.getElementById('tooltip-popup');
+    if (!popup) return;
+
+    document.addEventListener('mouseenter', function(e) {
+        var el = e.target.closest('.has-tooltip');
+        if (!el) return;
+        var text = el.getAttribute('data-tooltip');
+        if (!text) return;
+        popup.textContent = text;
+        popup.style.display = 'block';
+        positionTooltip(el, popup);
+    }, true);
+
+    document.addEventListener('mouseleave', function(e) {
+        var el = e.target.closest('.has-tooltip');
+        if (!el) return;
+        popup.style.display = 'none';
+    }, true);
+
+    function positionTooltip(el, popup) {
+        var rect = el.getBoundingClientRect();
+        var popH = popup.offsetHeight;
+        var popW = popup.offsetWidth;
+        var top = rect.bottom + 4;
+        var left = rect.left;
+
+        // Flip above if near bottom
+        if (top + popH > window.innerHeight - 8) {
+            top = rect.top - popH - 4;
+        }
+        // Align right if near right edge
+        if (left + popW > window.innerWidth - 8) {
+            left = window.innerWidth - popW - 8;
+        }
+        if (left < 4) left = 4;
+
+        popup.style.top = top + 'px';
+        popup.style.left = left + 'px';
+    }
+})();
+
 // === Sort & Filter State ===
-var sortState = {}; // keyed by tableId: { col: index, dir: 'asc'|'desc' }
-var currentFilter = null; // severity string or null
-var fileIntegrityHidden = true; // FI threats hidden by default
+var sortState = {};
+var currentFilter = null;
+var searchText = '';
+var fileIntegrityHidden = true;
+var currentPage = {};
+var ROWS_PER_PAGE = 50;
 
 var SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
@@ -72,6 +138,7 @@ function sortTable(tableId, colIndex) {
 
     rows.forEach(function(row) { tbody.appendChild(row); });
     updateSortArrows(tableId);
+    applyFilter();
 }
 
 function updateSortArrows(tableId) {
@@ -93,6 +160,14 @@ function updateSortArrows(tableId) {
     th.appendChild(span);
 }
 
+// === Search ===
+function onSearchInput() {
+    var input = document.getElementById('search-input');
+    searchText = input ? input.value.toLowerCase() : '';
+    resetPagination();
+    applyFilter();
+}
+
 // === Severity Filtering ===
 function filterBySeverity(severity) {
     if (currentFilter === severity) {
@@ -100,6 +175,7 @@ function filterBySeverity(severity) {
         return;
     }
     currentFilter = severity;
+    resetPagination();
     applyFilter();
     updateFilterBar();
     updateFilterButtons();
@@ -107,6 +183,7 @@ function filterBySeverity(severity) {
 
 function clearFilter() {
     currentFilter = null;
+    resetPagination();
     applyFilter();
     updateFilterBar();
     updateFilterButtons();
@@ -115,18 +192,92 @@ function clearFilter() {
 function applyFilter() {
     var tbodies = document.querySelectorAll('#recent-threats-body, #threats-table-body');
     tbodies.forEach(function(tbody) {
-        var rows = tbody.querySelectorAll('tr');
+        var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+        var visibleRows = [];
+
         rows.forEach(function(row) {
             var sevMatch = !currentFilter || row.getAttribute('data-severity') === currentFilter;
             var threatType = row.getAttribute('data-threat-type') || '';
             var fiMatch = !fileIntegrityHidden || !threatType.startsWith('file_');
-            if (sevMatch && fiMatch) {
-                row.style.display = '';
+
+            // Search filter: check cell text + tooltip
+            var searchMatch = true;
+            if (searchText) {
+                var rowText = '';
+                for (var i = 0; i < row.cells.length; i++) {
+                    rowText += row.cells[i].textContent + ' ';
+                    var tooltip = row.cells[i].getAttribute('data-tooltip');
+                    if (tooltip) rowText += tooltip + ' ';
+                }
+                searchMatch = rowText.toLowerCase().indexOf(searchText) >= 0;
+            }
+
+            if (sevMatch && fiMatch && searchMatch) {
+                visibleRows.push(row);
             } else {
                 row.style.display = 'none';
             }
         });
+
+        // Apply pagination to visible rows
+        var tableId = tbody.closest('table') ? tbody.closest('table').id : '';
+        var paginationId = '';
+        if (tableId === 'dashboard-threats-table') paginationId = 'pagination-dashboard';
+        else if (tableId === 'threats-page-table') paginationId = 'pagination-threats';
+
+        if (paginationId) {
+            var page = currentPage[paginationId] || 0;
+            var totalPages = Math.ceil(visibleRows.length / ROWS_PER_PAGE) || 1;
+            if (page >= totalPages) page = totalPages - 1;
+            currentPage[paginationId] = page;
+
+            var start = page * ROWS_PER_PAGE;
+            var end = start + ROWS_PER_PAGE;
+
+            visibleRows.forEach(function(row, i) {
+                row.style.display = (i >= start && i < end) ? '' : 'none';
+            });
+
+            renderPagination(paginationId, page, totalPages, visibleRows.length);
+        } else {
+            visibleRows.forEach(function(row) { row.style.display = ''; });
+        }
     });
+}
+
+// === Pagination ===
+function resetPagination() {
+    currentPage = {};
+}
+
+function renderPagination(containerId, page, totalPages, totalItems) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    container.textContent = '';
+
+    if (totalPages <= 1) return;
+
+    var prevBtn = document.createElement('button');
+    prevBtn.textContent = 'Prev';
+    prevBtn.disabled = page === 0;
+    prevBtn.onclick = function() {
+        currentPage[containerId] = Math.max(0, page - 1);
+        applyFilter();
+    };
+    container.appendChild(prevBtn);
+
+    var info = document.createElement('span');
+    info.textContent = 'Page ' + (page + 1) + ' of ' + totalPages + ' (' + totalItems + ' items)';
+    container.appendChild(info);
+
+    var nextBtn = document.createElement('button');
+    nextBtn.textContent = 'Next';
+    nextBtn.disabled = page >= totalPages - 1;
+    nextBtn.onclick = function() {
+        currentPage[containerId] = Math.min(totalPages - 1, page + 1);
+        applyFilter();
+    };
+    container.appendChild(nextBtn);
 }
 
 function toggleFileIntegrity() {
@@ -141,6 +292,7 @@ function toggleFileIntegrity() {
             btn.textContent = 'Hide File Integrity';
         }
     });
+    resetPagination();
     applyFilter();
 }
 
@@ -199,7 +351,6 @@ function updateFilterButtons() {
             while (liveCont.children.length > 20) {
                 liveCont.removeChild(liveCont.lastChild);
             }
-            // Increment severity counter live
             var sevEl = document.querySelector('[data-sev="' + t.severity + '"]');
             if (sevEl) {
                 sevEl.textContent = parseInt(sevEl.textContent) + 1;
@@ -225,7 +376,6 @@ function updateFilterButtons() {
     var hasThreatsPage = !!document.getElementById('threats-table-body');
     var hasFirewallPage = !!document.getElementById('blocks-table-body');
 
-    // Apply FI filter on page load to hide file integrity rows by default
     if (hasDashboard || hasThreatsPage) applyFilter();
 
     if (!hasDashboard && !hasThreatsPage && !hasFirewallPage) return;
@@ -236,6 +386,127 @@ function updateFilterButtons() {
         if (hasFirewallPage) refreshFirewallTables();
     }, 15000);
 })();
+
+// === Threat Detail Modal ===
+document.addEventListener('click', function(e) {
+    var row = e.target.closest('tr.clickable-row');
+    if (!row) return;
+    if (e.target.closest('button')) return;
+
+    var jsonStr = row.getAttribute('data-threat-json');
+    if (!jsonStr) return;
+
+    try {
+        var t = JSON.parse(jsonStr);
+        showThreatDetail(t);
+    } catch(err) {}
+});
+
+function showThreatDetail(t) {
+    var body = document.createElement('div');
+
+    // Detail grid
+    var grid = document.createElement('div');
+    grid.className = 'detail-grid';
+    var fields = [
+        ['ID', t.id || ''],
+        ['Type', formatThreatType(t.threat_type)],
+        ['Severity', t.severity || ''],
+        ['Module', t.source_module || ''],
+        ['Source IP', t.source_ip || 'N/A'],
+        ['Target', t.target || 'N/A'],
+        ['Time', formatTimeFull(t.timestamp)],
+        ['Responded', t.auto_responded ? 'Yes' : 'No']
+    ];
+    fields.forEach(function(f) {
+        var label = document.createElement('span');
+        label.className = 'detail-label';
+        label.textContent = f[0];
+        grid.appendChild(label);
+        var value = document.createElement('span');
+        value.className = 'detail-value';
+        if (f[0] === 'Severity') value.className += ' sev-' + (t.severity || '').toLowerCase();
+        value.textContent = f[1];
+        grid.appendChild(value);
+    });
+    body.appendChild(grid);
+
+    // Description
+    var descSection = document.createElement('div');
+    descSection.className = 'detail-section';
+    var descH4 = document.createElement('h4');
+    descH4.textContent = 'Description';
+    descSection.appendChild(descH4);
+    var descP = document.createElement('p');
+    descP.textContent = t.description || '';
+    descSection.appendChild(descP);
+    body.appendChild(descSection);
+
+    // Details key-value
+    if (t.details && Object.keys(t.details).length > 0) {
+        var detailSection = document.createElement('div');
+        detailSection.className = 'detail-section';
+        var detailH4 = document.createElement('h4');
+        detailH4.textContent = 'Details';
+        detailSection.appendChild(detailH4);
+        var detailGrid = document.createElement('div');
+        detailGrid.className = 'detail-grid';
+        for (var key in t.details) {
+            var dk = document.createElement('span');
+            dk.className = 'detail-label';
+            dk.textContent = key;
+            detailGrid.appendChild(dk);
+            var dv = document.createElement('span');
+            dv.className = 'detail-value';
+            dv.textContent = t.details[key];
+            detailGrid.appendChild(dv);
+        }
+        detailSection.appendChild(detailGrid);
+        body.appendChild(detailSection);
+    }
+
+    // Set modal content using DOM
+    document.getElementById('modal-title').textContent = 'Threat Details';
+    var modalBody = document.getElementById('modal-body');
+    modalBody.textContent = '';
+    modalBody.appendChild(body);
+
+    // Footer
+    var footer = document.getElementById('modal-footer');
+    footer.textContent = '';
+    if (t.source_ip) {
+        var blockBtn = document.createElement('button');
+        blockBtn.className = 'btn-modal-confirm';
+        blockBtn.textContent = 'Block IP';
+        var ipStr = t.source_ip;
+        blockBtn.onclick = function() { hideModal(); blockIp(ipStr); };
+        footer.appendChild(blockBtn);
+    }
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'btn-modal-cancel';
+    copyBtn.textContent = 'Copy Details';
+    copyBtn.onclick = function() { copyThreatDetails(); };
+    footer.appendChild(copyBtn);
+    var closeBtn = document.createElement('button');
+    closeBtn.className = 'btn-modal-cancel';
+    closeBtn.textContent = 'Close';
+    closeBtn.onclick = hideModal;
+    footer.appendChild(closeBtn);
+
+    document.getElementById('modal-overlay').style.display = 'flex';
+    window._currentThreatDetail = t;
+}
+
+function copyThreatDetails() {
+    if (window._currentThreatDetail) {
+        var text = JSON.stringify(window._currentThreatDetail, null, 2);
+        navigator.clipboard.writeText(text).then(function() {
+            showResult('Copied', 'Threat details copied to clipboard', false);
+        }).catch(function() {
+            showResult('Copy Failed', 'Could not copy to clipboard', true);
+        });
+    }
+}
 
 // === Table Refresh ===
 function refreshThreatTable() {
@@ -255,7 +526,6 @@ function refreshThreatTable() {
                 rebuildTbody(fullTbody, data.threats.slice().reverse(), buildThreatsPageRow);
             }
 
-            // Re-apply current sort and filter
             if (dashTbody && sortState['dashboard-threats-table']) {
                 var s = sortState['dashboard-threats-table'];
                 sortState['dashboard-threats-table'] = { col: s.col, dir: s.dir === 'asc' ? 'desc' : 'asc' };
@@ -288,6 +558,8 @@ function buildDashboardRow(t) {
     var tr = document.createElement('tr');
     tr.setAttribute('data-severity', sev);
     tr.setAttribute('data-threat-type', t.threat_type || '');
+    tr.setAttribute('data-threat-json', JSON.stringify(t));
+    tr.className = 'clickable-row';
 
     var tdSev = document.createElement('td');
     tdSev.className = 'sev-' + sev;
@@ -325,6 +597,8 @@ function buildThreatsPageRow(t) {
     var tr = document.createElement('tr');
     tr.setAttribute('data-severity', sev);
     tr.setAttribute('data-threat-type', t.threat_type || '');
+    tr.setAttribute('data-threat-json', JSON.stringify(t));
+    tr.className = 'clickable-row';
 
     var tdSev = document.createElement('td');
     tdSev.className = 'sev-' + sev;
@@ -362,7 +636,7 @@ function buildThreatsPageRow(t) {
         var btn = document.createElement('button');
         btn.className = 'btn-sm';
         btn.textContent = 'Block';
-        btn.onclick = function() { blockIp(ip); };
+        btn.onclick = function(e) { e.stopPropagation(); blockIp(ip); };
         tdActions.appendChild(btn);
     }
     tr.appendChild(tdActions);
@@ -372,8 +646,66 @@ function buildThreatsPageRow(t) {
 
 // === Actions ===
 function triggerScan() {
-    showModal('Running Scan', '<p>Scanning all modules...</p>', '');
-    fetch('/api/scan?token=' + API_TOKEN, { method: 'POST' })
+    var modules = ['network', 'process', 'file_integrity', 'auth', 'web', 'threat_intel', 'anomaly', 'honeypot'];
+
+    var container = document.createElement('div');
+    var p = document.createElement('p');
+    p.textContent = 'Select modules to scan:';
+    container.appendChild(p);
+
+    var checkboxDiv = document.createElement('div');
+    checkboxDiv.style.margin = '12px 0';
+    modules.forEach(function(m) {
+        var label = document.createElement('label');
+        label.style.cssText = 'display:block;padding:4px 0;cursor:pointer;font-size:13px';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'scan-module-cb';
+        cb.value = m;
+        cb.checked = true;
+        cb.style.marginRight = '8px';
+        label.appendChild(cb);
+        var text = m.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+        label.appendChild(document.createTextNode(text));
+        checkboxDiv.appendChild(label);
+    });
+    container.appendChild(checkboxDiv);
+
+    document.getElementById('modal-title').textContent = 'Run Scan';
+    var modalBody = document.getElementById('modal-body');
+    modalBody.textContent = '';
+    modalBody.appendChild(container);
+
+    var footer = document.getElementById('modal-footer');
+    footer.textContent = '';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.className = 'btn-modal-cancel';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.onclick = hideModal;
+    footer.appendChild(cancelBtn);
+    var goBtn = document.createElement('button');
+    goBtn.className = 'btn-modal-confirm';
+    goBtn.style.background = 'var(--btn-green)';
+    goBtn.textContent = 'Scan';
+    goBtn.onclick = function() {
+        var selected = [];
+        document.querySelectorAll('.scan-module-cb:checked').forEach(function(cb) {
+            selected.push(cb.value);
+        });
+        executeScan(selected);
+    };
+    footer.appendChild(goBtn);
+
+    document.getElementById('modal-overlay').style.display = 'flex';
+}
+
+function executeScan(modules) {
+    showModal('Running Scan', '<p>Scanning selected modules...</p>', '');
+    var opts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+    if (modules && modules.length > 0) {
+        opts.body = JSON.stringify({ modules: modules });
+    }
+    fetch('/api/scan?token=' + API_TOKEN, opts)
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var container = document.createElement('div');
@@ -517,6 +849,33 @@ function exportReport() {
     window.open('/report.pdf?token=' + API_TOKEN, '_blank');
 }
 
+function viewReport() {
+    showModal('Loading Report', '<p>Generating report...</p>', '');
+    fetch('/api/report?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var text = data.report || JSON.stringify(data, null, 2);
+            var pre = document.createElement('pre');
+            pre.style.cssText = 'white-space:pre-wrap;font-family:monospace;font-size:12px;line-height:1.5;max-height:60vh;overflow-y:auto';
+            pre.textContent = text;
+
+            document.getElementById('modal-title').textContent = 'Security Report';
+            var modalBody = document.getElementById('modal-body');
+            modalBody.textContent = '';
+            modalBody.appendChild(pre);
+            var footer = document.getElementById('modal-footer');
+            footer.textContent = '';
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'btn-modal-cancel';
+            closeBtn.textContent = 'Close';
+            closeBtn.onclick = hideModal;
+            footer.appendChild(closeBtn);
+        })
+        .catch(function(err) {
+            showResult('Report Failed', 'Error: ' + err, true);
+        });
+}
+
 function blockIp(ip) {
     showConfirm('Block IP', 'Block IP address ' + ip + '?', function() {
         fetch('/api/block?token=' + API_TOKEN, {
@@ -561,7 +920,7 @@ function unblockIp(ip) {
     });
 }
 
-// === Baseline Reset ===
+// === Baseline Reset & Create ===
 function resetBaseline() {
     showConfirm('Reset Baseline',
         'This will reset the file integrity baseline. All current files will be accepted as normal. Continue?',
@@ -583,6 +942,27 @@ function resetBaseline() {
     );
 }
 
+function createBaseline() {
+    showConfirm('Create Baseline',
+        'This will hash all watched files and create a new baseline. Continue?',
+        function() {
+            showModal('Creating Baseline', '<p>Hashing files...</p>', '');
+            fetch('/api/baseline/create?token=' + API_TOKEN, { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.status === 'ok') {
+                        showResult('Baseline Created', 'Hashed ' + (data.files_hashed || 0) + ' files', false);
+                    } else {
+                        showResult('Baseline Failed', data.message || 'Unknown error', true);
+                    }
+                })
+                .catch(function(err) {
+                    showResult('Baseline Failed', 'Error: ' + err, true);
+                });
+        }
+    );
+}
+
 // === File Integrity Toggle ===
 function toggleFI() {
     var statusEl = document.getElementById('fi-status');
@@ -599,7 +979,6 @@ function toggleFI() {
                     if (data.status === 'ok') {
                         showResult('File Integrity ' + (data.fi_enabled ? 'Enabled' : 'Disabled'),
                             data.message, false);
-                        // Update UI
                         if (statusEl) statusEl.textContent = data.fi_enabled ? 'Enabled' : 'Disabled';
                         var btn = document.getElementById('fi-toggle-btn');
                         if (btn) btn.textContent = data.fi_enabled ? 'Disable File Integrity' : 'Enable File Integrity';
@@ -612,6 +991,68 @@ function toggleFI() {
                 });
         }
     );
+}
+
+// === Config Validation ===
+function validateConfig() {
+    showModal('Validating Config', '<p>Checking configuration...</p>', '');
+    fetch('/api/check?token=' + API_TOKEN, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var container = document.createElement('div');
+            var p = document.createElement('p');
+            p.className = data.valid ? 'modal-success' : 'modal-error';
+            p.textContent = data.valid ? 'Configuration is valid.' : 'Configuration has errors.';
+            container.appendChild(p);
+
+            if (data.errors && data.errors.length > 0) {
+                var errSection = document.createElement('div');
+                errSection.className = 'detail-section';
+                var errH4 = document.createElement('h4');
+                errH4.textContent = 'Errors';
+                errSection.appendChild(errH4);
+                var errUl = document.createElement('ul');
+                data.errors.forEach(function(e) {
+                    var li = document.createElement('li');
+                    li.className = 'modal-error';
+                    li.textContent = e;
+                    errUl.appendChild(li);
+                });
+                errSection.appendChild(errUl);
+                container.appendChild(errSection);
+            }
+            if (data.warnings && data.warnings.length > 0) {
+                var warnSection = document.createElement('div');
+                warnSection.className = 'detail-section';
+                var warnH4 = document.createElement('h4');
+                warnH4.textContent = 'Warnings';
+                warnSection.appendChild(warnH4);
+                var warnUl = document.createElement('ul');
+                data.warnings.forEach(function(w) {
+                    var li = document.createElement('li');
+                    li.style.color = 'var(--accent-gold)';
+                    li.textContent = w;
+                    warnUl.appendChild(li);
+                });
+                warnSection.appendChild(warnUl);
+                container.appendChild(warnSection);
+            }
+
+            document.getElementById('modal-title').textContent = 'Config Validation';
+            var modalBody = document.getElementById('modal-body');
+            modalBody.textContent = '';
+            modalBody.appendChild(container);
+            var footer = document.getElementById('modal-footer');
+            footer.textContent = '';
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'btn-modal-cancel';
+            closeBtn.textContent = 'Close';
+            closeBtn.onclick = hideModal;
+            footer.appendChild(closeBtn);
+        })
+        .catch(function(err) {
+            showResult('Validation Failed', 'Error: ' + err, true);
+        });
 }
 
 // === Firewall Page ===
@@ -710,7 +1151,6 @@ function fwRemoveWhitelist(cidr) {
 }
 
 function refreshFirewallTables() {
-    // Refresh blocked IPs
     fetch('/api/blocks?token=' + API_TOKEN)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -761,7 +1201,6 @@ function refreshFirewallTables() {
             var countEl = document.getElementById('block-count');
             if (countEl) countEl.textContent = data.blocked_ips.length;
 
-            // Re-apply sort if active
             if (sortState['blocks-table']) {
                 var s = sortState['blocks-table'];
                 sortState['blocks-table'] = { col: s.col, dir: s.dir === 'asc' ? 'desc' : 'asc' };
@@ -770,7 +1209,6 @@ function refreshFirewallTables() {
         })
         .catch(function() {});
 
-    // Refresh whitelist
     fetch('/api/whitelist?token=' + API_TOKEN)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -799,7 +1237,6 @@ function refreshFirewallTables() {
             var countEl = document.getElementById('wl-count');
             if (countEl) countEl.textContent = data.whitelist.length;
 
-            // Re-apply sort if active
             if (sortState['whitelist-table']) {
                 var s = sortState['whitelist-table'];
                 sortState['whitelist-table'] = { col: s.col, dir: s.dir === 'asc' ? 'desc' : 'asc' };
@@ -846,7 +1283,6 @@ function truncateStr(s, max) {
 
 function formatThreatType(tt) {
     if (!tt) return '';
-    // Convert snake_case to Title Case
     return tt.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
 }
 
@@ -876,12 +1312,10 @@ function localizeTimestamps() {
         if (!ts) return;
         var d = new Date(ts);
         if (isNaN(d.getTime())) return;
-        // Short format if current text is time-only (HH:MM:SS), full otherwise
         var cur = el.textContent.trim();
         if (/^\d{2}:\d{2}:\d{2}$/.test(cur)) {
             el.textContent = formatTime(ts);
         } else {
-            // Preserve any suffix like " (expired)"
             var suffix = '';
             var match = cur.match(/(\s*\(.*\))$/);
             if (match) suffix = match[1];
@@ -890,3 +1324,9 @@ function localizeTimestamps() {
     });
 }
 localizeTimestamps();
+
+// === Config page toggle sections ===
+function toggleConfigSection(el) {
+    var section = el.closest('.config-section');
+    if (section) section.classList.toggle('open');
+}

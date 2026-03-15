@@ -1,5 +1,6 @@
 pub mod anomaly;
 pub mod auth;
+pub mod cert;
 pub mod file_integrity;
 pub mod honeypot;
 pub mod network;
@@ -97,6 +98,9 @@ pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
                     config.anomaly.clone(),
                     data_dir,
                 )));
+            }
+            "cert" if config.cert.enabled => {
+                modules.push(Arc::new(cert::CertModule::new(config.cert.clone())));
             }
             name => {
                 tracing::warn!(module = name, "Unknown or disabled module, skipping");

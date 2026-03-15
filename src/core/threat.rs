@@ -72,6 +72,10 @@ pub enum ThreatType {
     SudoersModified,
     NewUserCreated,
     HoneypotConnection,
+    ConnectionRateExceeded,
+    CertExpiringSoon,
+    KernelModuleLoaded,
+    NewOutboundDestination,
 }
 
 impl fmt::Display for ThreatType {
@@ -101,6 +105,10 @@ impl fmt::Display for ThreatType {
             ThreatType::SudoersModified => write!(f, "Sudoers Modified"),
             ThreatType::NewUserCreated => write!(f, "New User Created"),
             ThreatType::HoneypotConnection => write!(f, "Honeypot Connection"),
+            ThreatType::ConnectionRateExceeded => write!(f, "Connection Rate Exceeded"),
+            ThreatType::CertExpiringSoon => write!(f, "Certificate Expiring Soon"),
+            ThreatType::KernelModuleLoaded => write!(f, "Kernel Module Loaded"),
+            ThreatType::NewOutboundDestination => write!(f, "New Outbound Destination"),
         }
     }
 }
@@ -133,6 +141,10 @@ impl ThreatType {
             ThreatType::SudoersModified => ThreatSeverity::High,
             ThreatType::NewUserCreated => ThreatSeverity::Medium,
             ThreatType::HoneypotConnection => ThreatSeverity::High,
+            ThreatType::ConnectionRateExceeded => ThreatSeverity::Medium,
+            ThreatType::CertExpiringSoon => ThreatSeverity::Medium,
+            ThreatType::KernelModuleLoaded => ThreatSeverity::High,
+            ThreatType::NewOutboundDestination => ThreatSeverity::Low,
         }
     }
 
@@ -163,6 +175,10 @@ impl ThreatType {
             "sudoers_modified" => Some(ThreatType::SudoersModified),
             "new_user_created" => Some(ThreatType::NewUserCreated),
             "honeypot_connection" => Some(ThreatType::HoneypotConnection),
+            "connection_rate_exceeded" => Some(ThreatType::ConnectionRateExceeded),
+            "cert_expiring_soon" => Some(ThreatType::CertExpiringSoon),
+            "kernel_module_loaded" => Some(ThreatType::KernelModuleLoaded),
+            "new_outbound_destination" => Some(ThreatType::NewOutboundDestination),
             _ => None,
         }
     }

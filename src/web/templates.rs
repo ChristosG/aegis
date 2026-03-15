@@ -4,7 +4,7 @@ use crate::core::threat::ThreatSeverity;
 const STYLE: &str = include_str!("static/style.css");
 const APP_JS: &str = include_str!("static/app.js");
 
-fn page_wrapper(title: &str, content: &str, token: &str) -> String {
+fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -15,31 +15,39 @@ fn page_wrapper(title: &str, content: &str, token: &str) -> String {
     <style>{STYLE}</style>
 </head>
 <body>
-    <nav class="sidebar">
+    <div class="sidebar-overlay" id="sidebar-overlay" onclick="toggleSidebar()"></div>
+    <nav class="sidebar" id="sidebar" role="navigation" aria-label="Main navigation">
         <div class="logo">AEGIS</div>
-        <a href="/?token={token}" class="nav-link">Dashboard</a>
-        <a href="/threats?token={token}" class="nav-link">Threats</a>
-        <a href="/firewall?token={token}" class="nav-link">Firewall</a>
+        <a href="/?token={token}" class="nav-link{dash_active}">Dashboard</a>
+        <a href="/threats?token={token}" class="nav-link{threats_active}">Threats</a>
+        <a href="/firewall?token={token}" class="nav-link{firewall_active}">Firewall</a>
+        <a href="/status?token={token}" class="nav-link{status_active}">Status</a>
+        <a href="/config?token={token}" class="nav-link{config_active}">Config</a>
+        <a href="/logs?token={token}" class="nav-link{logs_active}">Logs</a>
     </nav>
-    <main class="content">
+    <main class="content" role="main">
         <header class="top-bar">
-            <h1>{title}</h1>
+            <div style="display:flex;align-items:center;gap:12px">
+                <button class="hamburger" onclick="toggleSidebar()" aria-label="Toggle navigation">&#9776;</button>
+                <h1>{title}</h1>
+            </div>
             <span class="version">v{version}</span>
         </header>
         <div class="main-content">
             {content}
         </div>
     </main>
-    <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal(event)">
+    <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal(event)" role="dialog" aria-modal="true">
         <div class="modal" onclick="event.stopPropagation()">
             <div class="modal-header">
                 <h3 id="modal-title"></h3>
-                <button class="modal-close" onclick="hideModal()">&times;</button>
+                <button class="modal-close" onclick="hideModal()" aria-label="Close">&times;</button>
             </div>
             <div class="modal-body" id="modal-body"></div>
             <div class="modal-footer" id="modal-footer"></div>
         </div>
     </div>
+    <div id="tooltip-popup" class="tooltip-popup" style="display:none"></div>
     <script>const API_TOKEN = "{token}";</script>
     <script>{APP_JS}</script>
 </body>
@@ -48,6 +56,36 @@ fn page_wrapper(title: &str, content: &str, token: &str) -> String {
         content = content,
         token = token,
         version = env!("CARGO_PKG_VERSION"),
+        dash_active = if current_page == "dashboard" {
+            " active"
+        } else {
+            ""
+        },
+        threats_active = if current_page == "threats" {
+            " active"
+        } else {
+            ""
+        },
+        firewall_active = if current_page == "firewall" {
+            " active"
+        } else {
+            ""
+        },
+        status_active = if current_page == "status" {
+            " active"
+        } else {
+            ""
+        },
+        config_active = if current_page == "config" {
+            " active"
+        } else {
+            ""
+        },
+        logs_active = if current_page == "logs" {
+            " active"
+        } else {
+            ""
+        },
     )
 }
 
@@ -80,8 +118,9 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 .replace(' ', "_");
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
             let full_desc = html_escape(&t.description);
+            let threat_json = html_escape(&threat_to_json(t));
             format!(
-                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}">
+                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}" data-threat-json="{threat_json}" class="clickable-row">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
                     <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
@@ -90,6 +129,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 </tr>"#,
                 sev_lower = sev_lower,
                 threat_type_snake = threat_type_snake,
+                threat_json = threat_json,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
@@ -137,11 +177,15 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
             <button onclick="triggerScan()">Run Scan</button>
             <button onclick="triggerAutoRespond()">Auto-Respond</button>
             <button onclick="exportReport()">Export Report</button>
+            <button onclick="viewReport()">View Report</button>
         </div>
         <div class="section">
             <h3 style="display:inline">Recent Threats</h3>
             <button class="btn-toggle active" id="fi-toggle-dash" onclick="toggleFileIntegrity()">Show File Integrity</button>
             <div id="live-threats"></div>
+            <div class="search-bar">
+                <input type="text" class="search-input" id="search-input" placeholder="Search threats..." oninput="onSearchInput()" />
+            </div>
             <div id="filter-bar" class="filter-bar" style="display:none"></div>
             <table class="threats-table" id="dashboard-threats-table">
                 <thead>
@@ -155,6 +199,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 </thead>
                 <tbody id="recent-threats-body">{recent_threats}</tbody>
             </table>
+            <div class="pagination" id="pagination-dashboard"></div>
         </div>
         "#,
         posture_class = posture_class,
@@ -170,7 +215,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         recent_threats = recent_threats,
     );
 
-    page_wrapper("Dashboard", &content, token)
+    page_wrapper("Dashboard", &content, token, "dashboard")
 }
 
 pub fn render_threats_page(state: &AppState, token: &str) -> String {
@@ -187,8 +232,9 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
             let responded = if t.auto_responded { "Yes" } else { "No" };
             let full_desc = html_escape(&t.description);
+            let threat_json = html_escape(&threat_to_json(t));
             format!(
-                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}">
+                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}" data-threat-json="{threat_json}" class="clickable-row">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
                     <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
@@ -202,6 +248,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                 </tr>"#,
                 sev_lower = sev_lower,
                 threat_type_snake = threat_type_snake,
+                threat_json = threat_json,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
@@ -214,7 +261,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                 time = t.timestamp.format("%Y-%m-%d %H:%M:%S"),
                 block_btn = if t.source_ip.is_some() {
                     format!(
-                        r#"<button class="btn-sm" onclick="blockIp('{}')">Block</button>"#,
+                        r#"<button class="btn-sm" onclick="event.stopPropagation();blockIp('{}')">Block</button>"#,
                         ip
                     )
                 } else {
@@ -247,6 +294,9 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
         <div style="margin-bottom:12px">
             <button class="btn-toggle active" id="fi-toggle-threats" onclick="toggleFileIntegrity()">Show File Integrity</button>
         </div>
+        <div class="search-bar">
+            <input type="text" class="search-input" id="search-input" placeholder="Search threats..." oninput="onSearchInput()" />
+        </div>
         <div id="filter-bar" class="filter-bar" style="display:none"></div>
         <table class="threats-table" id="threats-page-table">
             <thead>
@@ -263,6 +313,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
             </thead>
             <tbody id="threats-table-body">{rows}</tbody>
         </table>
+        <div class="pagination" id="pagination-threats"></div>
         "#,
         rows = rows,
         critical = critical,
@@ -272,7 +323,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
         info_count = info_count,
     );
 
-    page_wrapper("Threats", &content, token)
+    page_wrapper("Threats", &content, token, "threats")
 }
 
 pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> String {
@@ -361,11 +412,11 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
         </div>
         <div class="section">
             <h3>File Integrity</h3>
-            <p style="color:#8b949e;font-size:13px;margin-bottom:12px">
+            <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px">
                 Status: <strong id="fi-status">{fi_status}</strong>
             </p>
             <button id="fi-toggle-btn" onclick="toggleFI()">{fi_btn_label}</button>
-            {fi_baseline_btn}
+            {fi_baseline_btns}
         </div>
         <div class="section">
             <h3>Add to Whitelist</h3>
@@ -395,8 +446,9 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
         } else {
             "Enable File Integrity"
         },
-        fi_baseline_btn = if fi_enabled {
-            r#"<button onclick="resetBaseline()" style="margin-left:8px">Reset Baseline</button>"#
+        fi_baseline_btns = if fi_enabled {
+            r#"<button onclick="resetBaseline()" style="margin-left:8px">Reset Baseline</button>
+            <button onclick="createBaseline()" style="margin-left:8px">Create Baseline</button>"#
         } else {
             ""
         },
@@ -404,7 +456,19 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
         wl_rows = wl_rows,
     );
 
-    page_wrapper("Firewall", &content, token)
+    page_wrapper("Firewall", &content, token, "firewall")
+}
+
+pub fn render_status_page(content: &str, token: &str) -> String {
+    page_wrapper("Status", content, token, "status")
+}
+
+pub fn render_config_page(content: &str, token: &str) -> String {
+    page_wrapper("Configuration", content, token, "config")
+}
+
+pub fn render_logs_page(content: &str, token: &str) -> String {
+    page_wrapper("Logs", content, token, "logs")
 }
 
 fn severity_class(sev: ThreatSeverity) -> &'static str {
@@ -425,10 +489,18 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+pub fn html_escape_pub(s: &str) -> String {
+    html_escape(s)
+}
+
 fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+fn threat_to_json(t: &crate::core::threat::ThreatEvent) -> String {
+    serde_json::to_string(t).unwrap_or_default()
 }

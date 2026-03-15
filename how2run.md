@@ -18,6 +18,9 @@
   sudo ./target/release/aegis scan --processes
   sudo ./target/release/aegis scan --files
   sudo ./target/release/aegis scan --intel
+  sudo ./target/release/aegis scan --anomaly
+  sudo ./target/release/aegis scan --honeypot
+  sudo ./target/release/aegis scan --cert
 
   # Scan with auto-response (blocks IPs, kills miners)
   sudo ./target/release/aegis scan --auto-respond
@@ -66,6 +69,12 @@
     baseline.json          — file integrity baseline hashes
     feeds/                 — cached threat intelligence feed data
     quarantine/            — quarantined files and their .meta.json sidecars
+    email_cooldowns.json   — email alert rate-limit state per threat type
+    outbound_baseline.json — known outbound destinations baseline (auto-capped at 5000)
+    anomaly_cron_baseline.json    — cron file baseline for change detection
+    anomaly_sudoers_baseline.json — sudoers baseline for change detection
+    anomaly_users_baseline.json   — known user accounts baseline
+    kernel_modules_baseline.json  — loaded kernel modules baseline
 
   System files created by `aegis init`:
     /etc/aegis/aegis.toml                       — main config
@@ -74,6 +83,43 @@
     /etc/fail2ban/jail.d/aegis-threat.conf      — fail2ban jail
     /etc/systemd/system/aegis.service           — systemd unit
     /usr/local/bin/aegis                        — installed binary
+
+  # Web Dashboard (optional, feature-gated)
+  cargo build --release --features web-dashboard
+  sudo ./target/release/aegis watch --foreground
+  # Dashboard available at http://localhost:3000
+  # Auth token printed to stdout on first run
+
+  Web Dashboard pages:
+    /              — Dashboard (real-time overview, threat stats)
+    /threats       — Searchable threat log with pagination
+    /firewall      — Active blocks, whitelist management
+    /status        — System health and module status
+    /config        — Live configuration viewer
+    /logs          — Structured log viewer
+
+  API endpoints (27 total):
+    GET  /api/threats    — threat list with search/pagination
+    GET  /api/blocks     — active firewall blocks
+    POST /api/block      — block an IP
+    POST /api/unblock    — unblock an IP
+    GET  /api/whitelist  — list whitelisted IPs
+    POST /api/whitelist  — add to whitelist
+    GET  /api/config     — current configuration
+    POST /api/check      — validate config
+    POST /api/scan       — trigger on-demand scan
+    POST /api/respond    — trigger auto-response
+    GET  /api/stats      — dashboard statistics
+    GET  /api/status     — system health
+    GET  /api/report     — generate report
+    GET  /api/logs       — structured logs
+    GET  /ws/threats     — WebSocket live threat stream
+    GET  /health         — health check
+
+  New modules in aegis.toml:
+    [anomaly]    — login time, cron/sudoers monitoring, new users, kernel modules
+    [honeypot]   — decoy port listeners with auto-block
+    [cert]       — TLS certificate expiry monitoring
 
   To install system-wide manually (alternative to `aegis init`):
 

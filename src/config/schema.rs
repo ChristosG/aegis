@@ -17,6 +17,7 @@ pub struct AegisConfig {
     pub anomaly: AnomalyConfig,
     pub honeypot: HoneypotConfig,
     pub dashboard: DashboardConfig,
+    pub cert: CertConfig,
 }
 
 /// General daemon / runtime settings.
@@ -74,6 +75,8 @@ pub struct NetworkConfig {
     pub c2_beacon_threshold: u32,
     /// Window in seconds for C2 beacon detection.
     pub c2_beacon_window: u64,
+    /// Connections per minute from a single IP to trigger rate alert.
+    pub connection_rate_threshold: u32,
 }
 
 impl Default for NetworkConfig {
@@ -93,6 +96,7 @@ impl Default for NetworkConfig {
             ],
             c2_beacon_threshold: 10,
             c2_beacon_window: 300,
+            connection_rate_threshold: 100,
         }
     }
 }
@@ -635,6 +639,27 @@ impl Default for HoneypotConfig {
             ports: vec![2222, 2223, 8022],
             auto_block: true,
             linger_seconds: 10,
+        }
+    }
+}
+
+/// TLS certificate monitoring configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CertConfig {
+    pub enabled: bool,
+    /// Domains to check (e.g. "example.com:443").
+    pub domains: Vec<String>,
+    /// Days before expiry to start warning.
+    pub warn_days: u32,
+}
+
+impl Default for CertConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            domains: Vec::new(),
+            warn_days: 14,
         }
     }
 }

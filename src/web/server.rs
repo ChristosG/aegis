@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use tokio::sync::RwLock;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 
 use crate::alerting::AlertManager;
@@ -17,6 +18,7 @@ use crate::response::ResponseEngine;
 use crate::storage::Storage;
 
 use super::auth::auth_middleware;
+use super::rate_limit::RateLimitLayer;
 use super::routes;
 
 /// Shared application context passed to all route handlers.
@@ -55,11 +57,31 @@ pub async fn start_server(
         api_token,
     };
 
+    let origin = format!("http://{}:{}", dashboard_config.bind, dashboard_config.port);
+    let cors = CorsLayer::new()
+        .allow_origin(AllowOrigin::exact(
+            origin
+                .parse()
+                .unwrap_or_else(|_| "http://127.0.0.1:9443".parse().unwrap()),
+        ))
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::DELETE,
+        ])
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ]);
+
     let app = Router::new()
         // HTML pages
         .route("/", get(routes::dashboard::dashboard_page))
         .route("/threats", get(routes::threats::threats_page))
         .route("/firewall", get(routes::firewall::firewall_page))
+        .route("/status", get(routes::status::status_page))
+        .route("/config", get(routes::config::config_page))
+        .route("/logs", get(routes::logs::logs_page))
         // Health check (no auth)
         .route("/health", get(routes::dashboard::health))
         // API routes
@@ -74,9 +96,11 @@ pub async fn start_server(
             delete(routes::whitelist::api_whitelist_remove),
         )
         .route("/api/config", get(routes::config::api_config))
+        .route("/api/check", post(routes::config::api_check))
         .route("/api/scan", post(routes::scan::api_scan))
         .route("/api/respond", post(routes::scan::api_respond))
         .route("/api/stats", get(routes::dashboard::api_stats))
+        .route("/api/status", get(routes::status::api_status))
         .route("/api/report", get(routes::report::api_report))
         .route("/report.pdf", get(routes::report::download_pdf))
         .route("/ws/threats", get(routes::ws::ws_threats))
@@ -85,10 +109,17 @@ pub async fn start_server(
             post(routes::baseline::api_baseline_reset),
         )
         .route(
+            "/api/baseline/create",
+            post(routes::baseline::api_baseline_create),
+        )
+        .route(
             "/api/file-integrity/toggle",
             post(routes::baseline::api_fi_toggle),
         )
+        .route("/api/logs", get(routes::logs::api_logs))
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
+        .layer(RateLimitLayer::new())
+        .layer(cors)
         .with_state(ctx);
 
     let bind_addr = format!("{}:{}", dashboard_config.bind, dashboard_config.port);

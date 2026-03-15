@@ -430,7 +430,9 @@ impl ResponseEngine {
         // Check per-threat-type overrides first.
         let threat_key = threat_type_to_config_key(&event.threat_type);
         if let Some(action_str) = self.config.overrides.get(&threat_key) {
-            return action_str.parse::<ResponseAction>().unwrap();
+            return action_str
+                .parse::<ResponseAction>()
+                .unwrap_or(ResponseAction::Log);
         }
 
         // Fall back to severity-based defaults.
@@ -811,5 +813,9 @@ fn threat_type_to_config_key(tt: &ThreatType) -> String {
         ThreatType::SudoersModified => "sudoers_modified".into(),
         ThreatType::NewUserCreated => "new_user_created".into(),
         ThreatType::HoneypotConnection => "honeypot_connection".into(),
+        ThreatType::ConnectionRateExceeded => "connection_rate_exceeded".into(),
+        ThreatType::CertExpiringSoon => "cert_expiring_soon".into(),
+        ThreatType::KernelModuleLoaded => "kernel_module_loaded".into(),
+        ThreatType::NewOutboundDestination => "new_outbound_destination".into(),
     }
 }

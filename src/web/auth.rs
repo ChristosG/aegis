@@ -69,9 +69,12 @@ pub async fn auth_middleware(
             let mut response = next.run(request).await;
             // Set cookie if auth came from header or query param
             if needs_cookie {
+                let bind = &ctx.config.dashboard.bind;
+                let is_localhost = bind == "127.0.0.1" || bind == "::1" || bind == "localhost";
+                let secure_flag = if is_localhost { "" } else { "; Secure" };
                 let cookie = format!(
-                    "aegis_token={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400",
-                    t
+                    "aegis_token={}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
+                    t, secure_flag
                 );
                 if let Ok(val) = cookie.parse() {
                     response.headers_mut().insert(SET_COOKIE, val);

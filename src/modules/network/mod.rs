@@ -296,6 +296,120 @@ impl NetworkModule {
 
         threats
     }
+
+    /// D1: Detect connection rate exceeded per source IP.
+    fn detect_connection_rate(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+        let mut threats = Vec::new();
+        if self.config.connection_rate_threshold == 0 {
+            return threats;
+        }
+
+        // Count all connections per remote IP (not just ESTABLISHED)
+        let mut ip_counts: HashMap<IpAddr, u32> = HashMap::new();
+        for conn in connections {
+            if is_private(&conn.remote_ip) {
+                continue;
+            }
+            *ip_counts.entry(conn.remote_ip).or_insert(0) += 1;
+        }
+
+        for (ip, count) in &ip_counts {
+            if *count > self.config.connection_rate_threshold {
+                let description = format!(
+                    "Connection rate exceeded from {}: {} connections (threshold: {})",
+                    ip, count, self.config.connection_rate_threshold
+                );
+                let event =
+                    ThreatEvent::new(ThreatType::ConnectionRateExceeded, "network", &description)
+                        .with_source_ip(*ip)
+                        .with_detail("connection_count", count.to_string())
+                        .with_detail(
+                            "threshold",
+                            self.config.connection_rate_threshold.to_string(),
+                        );
+
+                warn!(
+                    ip = %ip,
+                    count = count,
+                    "Connection rate threshold exceeded"
+                );
+                threats.push(event);
+            }
+        }
+
+        threats
+    }
+
+    /// D4: Detect new outbound destinations not seen in baseline.
+    fn detect_new_outbound_destinations(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+        let mut threats = Vec::new();
+
+        let data_dir = crate::config::defaults::resolve_path("~/.aegis");
+        let baseline_path = data_dir.join("outbound_baseline.json");
+
+        // Collect current outbound destinations
+        let mut current_destinations: std::collections::HashSet<(String, u16)> =
+            std::collections::HashSet::new();
+        for conn in connections {
+            if conn.state != tcp_state::ESTABLISHED {
+                continue;
+            }
+            if is_private(&conn.remote_ip) {
+                continue;
+            }
+            if conn.local_port < 1024 {
+                continue; // Not outbound
+            }
+            current_destinations.insert((conn.remote_ip.to_string(), conn.remote_port));
+        }
+
+        // Load baseline
+        let baseline: std::collections::HashSet<(String, u16)> = if baseline_path.exists() {
+            match std::fs::read_to_string(&baseline_path) {
+                Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+                Err(_) => std::collections::HashSet::new(),
+            }
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        if !baseline.is_empty() {
+            for (dest_ip, dest_port) in &current_destinations {
+                if !baseline.contains(&(dest_ip.clone(), *dest_port)) {
+                    let description = format!(
+                        "New outbound destination detected: {}:{}",
+                        dest_ip, dest_port
+                    );
+                    let event = ThreatEvent::new(
+                        ThreatType::NewOutboundDestination,
+                        "network",
+                        &description,
+                    )
+                    .with_target(format!("{}:{}", dest_ip, dest_port))
+                    .with_detail("dest_port", dest_port.to_string());
+
+                    if let Ok(ip) = dest_ip.parse() {
+                        threats.push(event.with_source_ip(ip));
+                    } else {
+                        threats.push(event);
+                    }
+                }
+            }
+        }
+
+        // Save current snapshot as baseline (replaces previous, capped at 5000 entries)
+        let mut baseline_vec: Vec<_> = current_destinations.into_iter().collect();
+        if baseline_vec.len() > 5000 {
+            baseline_vec.truncate(5000);
+        }
+        let capped: std::collections::HashSet<(String, u16)> = baseline_vec.into_iter().collect();
+        if let Ok(json) = serde_json::to_string_pretty(&capped) {
+            let _ = std::fs::create_dir_all(&data_dir);
+            let _ = std::fs::write(&baseline_path, json);
+        }
+
+        threats
+    }
 }
 
 #[async_trait]
@@ -318,11 +432,13 @@ impl ScanModule for NetworkModule {
 
         let mut threats = Vec::new();
 
-        // Run all four detectors
+        // Run all detectors
         threats.extend(self.detect_syn_flood(&connections));
         threats.extend(self.detect_port_scan(&connections));
         threats.extend(self.detect_suspicious_outbound(&connections));
         threats.extend(self.detect_c2_beacon(&connections));
+        threats.extend(self.detect_connection_rate(&connections));
+        threats.extend(self.detect_new_outbound_destinations(&connections));
 
         info!(count = threats.len(), "Network scan complete");
         Ok(threats)

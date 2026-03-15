@@ -28,9 +28,34 @@ pub struct AlertManager {
 
 impl AlertManager {
     pub fn new(config: AlertingConfig) -> Self {
+        let data_dir = shellexpand_tilde(&config.log_file);
+        let cooldown_path = Path::new(&data_dir)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("email_cooldowns.json");
+
+        let mut cooldowns: HashMap<String, DateTime<Utc>> = if cooldown_path.exists() {
+            match fs::read_to_string(&cooldown_path) {
+                Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                Err(_) => HashMap::new(),
+            }
+        } else {
+            HashMap::new()
+        };
+
+        // Prune stale cooldown entries older than the configured duration
+        if !cooldowns.is_empty() {
+            let cooldown_dur = Scheduler::parse_duration(&config.email.cooldown)
+                .unwrap_or_else(|_| Duration::from_secs(300));
+            if let Ok(cooldown_chrono) = chrono::Duration::from_std(cooldown_dur) {
+                let now = Utc::now();
+                cooldowns.retain(|_, last_sent| now - *last_sent < cooldown_chrono);
+            }
+        }
+
         Self {
             config,
-            email_cooldown: Mutex::new(HashMap::new()),
+            email_cooldown: Mutex::new(cooldowns),
         }
     }
 
@@ -69,6 +94,17 @@ impl AlertManager {
         }
 
         Ok(())
+    }
+
+    fn persist_cooldowns(&self, cooldowns: &HashMap<String, DateTime<Utc>>) {
+        let data_dir = shellexpand_tilde(&self.config.log_file);
+        let cooldown_path = Path::new(&data_dir)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("email_cooldowns.json");
+        if let Ok(json) = serde_json::to_string(cooldowns) {
+            let _ = fs::write(&cooldown_path, json);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -183,6 +219,7 @@ impl AlertManager {
                 }
             }
             cooldowns.insert(threat_key, Utc::now());
+            self.persist_cooldowns(&cooldowns);
         }
 
         // Build the email.

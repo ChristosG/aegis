@@ -46,6 +46,54 @@ pub async fn api_baseline_reset(State(ctx): State<AppContext>) -> Json<serde_jso
     }
 }
 
+pub async fn api_baseline_create(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
+    let config = &ctx.config.file_integrity;
+    let baseline_path = resolve_path(&config.baseline_path);
+
+    match crate::init::build_baseline_map(&config.watch_paths, &config.exclude_paths) {
+        Ok((baseline, file_count, _error_count)) => {
+            // Ensure parent directory exists
+            if let Some(parent) = baseline_path.parent() {
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    warn!(error = %e, "Failed to create baseline directory");
+                    return Json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Failed to create directory: {}", e)
+                    }));
+                }
+            }
+
+            match serde_json::to_string_pretty(&baseline) {
+                Ok(json) => {
+                    if let Err(e) = std::fs::write(&baseline_path, json) {
+                        warn!(error = %e, "Failed to write baseline file");
+                        return Json(serde_json::json!({
+                            "status": "error",
+                            "message": format!("Failed to write baseline: {}", e)
+                        }));
+                    }
+                    info!(files = file_count, "Baseline created via API");
+                    Json(serde_json::json!({
+                        "status": "ok",
+                        "files_hashed": file_count,
+                    }))
+                }
+                Err(e) => Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("Failed to serialize baseline: {}", e)
+                })),
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to build baseline");
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to build baseline: {}", e)
+            }))
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct FiToggleParams {
     pub action: String,

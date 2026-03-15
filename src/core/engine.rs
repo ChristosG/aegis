@@ -513,9 +513,10 @@ impl Engine {
                                 if let Some(entry) = seen.get(&fingerprint) {
                                     if entry.last_seen >= now - ttl_chrono {
                                         // Update count and skip processing.
-                                        let entry = seen.get_mut(&fingerprint).unwrap();
-                                        entry.last_seen = now;
-                                        entry.count += 1;
+                                        if let Some(entry) = seen.get_mut(&fingerprint) {
+                                            entry.last_seen = now;
+                                            entry.count += 1;
+                                        }
                                         suppressed_since_last_log += 1;
 
                                         // Log a suppression summary every 60 seconds.

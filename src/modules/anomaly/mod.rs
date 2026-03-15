@@ -252,6 +252,49 @@ impl AnomalyModule {
 
         threats
     }
+
+    /// D3: Check for new/unexpected kernel modules by comparing /proc/modules to baseline.
+    fn check_kernel_modules(&self) -> Vec<ThreatEvent> {
+        let mut threats = Vec::new();
+        let baseline_path = self.data_dir.join("kernel_modules_baseline.json");
+
+        let current_modules = match parse_kernel_modules() {
+            Ok(m) => m,
+            Err(_) => return threats,
+        };
+
+        let baseline_modules: Vec<String> = if baseline_path.exists() {
+            match std::fs::read_to_string(&baseline_path) {
+                Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+
+        if !baseline_modules.is_empty() {
+            for module in &current_modules {
+                if !baseline_modules.contains(module) {
+                    threats.push(
+                        ThreatEvent::new(
+                            ThreatType::KernelModuleLoaded,
+                            "anomaly",
+                            format!("New kernel module detected: {}", module),
+                        )
+                        .with_detail("module_name", module.clone())
+                        .with_severity(ThreatSeverity::High),
+                    );
+                }
+            }
+        }
+
+        // Save current as baseline
+        if let Ok(json) = serde_json::to_string_pretty(&current_modules) {
+            let _ = std::fs::write(&baseline_path, json);
+        }
+
+        threats
+    }
 }
 
 #[async_trait]
@@ -276,6 +319,8 @@ impl ScanModule for AnomalyModule {
         if self.config.watch_user_changes {
             threats.extend(self.check_new_users());
         }
+
+        threats.extend(self.check_kernel_modules());
 
         debug!(count = threats.len(), "Anomaly scan complete");
         Ok(threats)
@@ -352,6 +397,19 @@ fn hash_paths(paths: &[String]) -> HashMap<String, String> {
     }
 
     result
+}
+
+/// Parse kernel module names from /proc/modules.
+fn parse_kernel_modules() -> Result<Vec<String>> {
+    let content = std::fs::read_to_string("/proc/modules")?;
+    let modules: Vec<String> = content
+        .lines()
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?;
+            Some(name.to_string())
+        })
+        .collect();
+    Ok(modules)
 }
 
 /// Parse usernames from /etc/passwd.

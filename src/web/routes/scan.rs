@@ -2,15 +2,31 @@ use axum::{extract::State, http::StatusCode, response::Json};
 
 use crate::web::server::AppContext;
 
-/// Trigger a one-shot scan via the API.
+#[derive(serde::Deserialize, Default)]
+pub struct ScanRequest {
+    #[serde(default)]
+    pub modules: Option<Vec<String>>,
+}
+
+/// Trigger a one-shot scan via the API, optionally filtering by module names.
 pub async fn api_scan(
     State(ctx): State<AppContext>,
+    body: Option<Json<ScanRequest>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Run all enabled modules
+    let requested_modules = body.and_then(|b| b.0.modules);
+
+    // Create all enabled modules, then filter by request
     let modules = crate::modules::create_modules(&ctx.config);
     let mut all_threats = Vec::new();
 
     for module in &modules {
+        // If specific modules were requested, only run those
+        if let Some(ref requested) = requested_modules {
+            if !requested.iter().any(|r| r == module.name()) {
+                continue;
+            }
+        }
+
         match module.scan().await {
             Ok(threats) => {
                 all_threats.extend(threats);
