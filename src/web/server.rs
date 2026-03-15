@@ -31,6 +31,7 @@ pub struct AppContext {
     pub storage: Arc<Storage>,
     pub event_bus: EventBus,
     pub api_token: String,
+    pub auth_required: bool,
 }
 
 /// Start the web dashboard server.
@@ -47,6 +48,11 @@ pub async fn start_server(
 ) -> Result<()> {
     let api_token = super::token::ensure_token(&dashboard_config.token_file)?;
 
+    let is_localhost = matches!(
+        dashboard_config.bind.as_str(),
+        "127.0.0.1" | "::1" | "localhost"
+    );
+
     let ctx = AppContext {
         state,
         config,
@@ -55,6 +61,7 @@ pub async fn start_server(
         storage,
         event_bus,
         api_token,
+        auth_required: !is_localhost,
     };
 
     let origin = format!("http://{}:{}", dashboard_config.bind, dashboard_config.port);

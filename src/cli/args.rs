@@ -182,6 +182,14 @@ pub enum Commands {
         off: bool,
     },
 
+    /// Merge new config options into an existing aegis.toml.
+    ///
+    /// Adds any keys/sections from the default config that are missing in
+    /// the user's config, without changing existing values. Called
+    /// automatically by the .deb postinst on upgrades.
+    #[command(name = "config-upgrade")]
+    ConfigUpgrade,
+
     /// Full system hardening setup: config, sysctl, firewall, baseline,
     /// fail2ban, and systemd service installation.
     Init {

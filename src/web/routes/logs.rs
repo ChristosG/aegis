@@ -126,7 +126,12 @@ pub async fn logs_page(State(ctx): State<AppContext>) -> Html<String> {
         </script>
     "#;
 
-    Html(templates::render_logs_page(content, &ctx.api_token))
+    let token = if ctx.auth_required {
+        &ctx.api_token
+    } else {
+        ""
+    };
+    Html(templates::render_logs_page(content, token))
 }
 
 #[derive(serde::Deserialize)]

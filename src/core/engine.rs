@@ -74,7 +74,7 @@ impl Engine {
                 let now = chrono::Utc::now();
                 let active: std::collections::HashMap<_, _> = blocked
                     .into_iter()
-                    .filter(|(_, entry)| entry.expires_at.map_or(true, |exp| exp > now))
+                    .filter(|(_, entry)| entry.expires_at.is_none_or(|exp| exp > now))
                     .collect();
 
                 if !active.is_empty() {

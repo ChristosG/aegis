@@ -9,7 +9,12 @@ use crate::web::templates;
 
 pub async fn threats_page(State(ctx): State<AppContext>) -> Result<Html<String>, StatusCode> {
     let state = ctx.state.read().await;
-    let html = templates::render_threats_page(&state, &ctx.api_token);
+    let token = if ctx.auth_required {
+        &ctx.api_token
+    } else {
+        ""
+    };
+    let html = templates::render_threats_page(&state, token);
     Ok(Html(html))
 }
 

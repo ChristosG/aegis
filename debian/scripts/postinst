@@ -4,9 +4,28 @@ mkdir -p /root/.aegis
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
 fi
-echo ""
-echo "  Aegis installed. Next steps:"
-echo "    1. sudo aegis init        (system hardening)"
-echo "    2. sudo systemctl enable --now aegis"
-echo "  Config: /etc/aegis/aegis.toml"
-echo ""
+
+# $2 is set to the old version on upgrade, empty on fresh install
+if [ -n "$2" ]; then
+    # Upgrade: merge new config options, restart service
+    echo ""
+    echo "  Aegis upgraded (${2} -> $(aegis --version 2>/dev/null || echo 'new'))."
+    aegis config-upgrade 2>/dev/null || true
+    if systemctl is-active --quiet aegis 2>/dev/null; then
+        systemctl restart aegis
+        echo "  Service restarted. Blocked IPs and config preserved."
+    else
+        echo "  Start with: sudo systemctl start aegis"
+    fi
+    echo ""
+else
+    # Fresh install
+    echo ""
+    echo "  Aegis installed. Next steps:"
+    echo "    1. sudo aegis init        (first-time system hardening)"
+    echo "    2. sudo systemctl enable --now aegis"
+    echo "  Config: /etc/aegis/aegis.toml"
+    echo ""
+    echo "  Do NOT run 'aegis init' on upgrades — it is only for first-time setup."
+    echo ""
+fi

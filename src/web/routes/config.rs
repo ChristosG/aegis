@@ -112,7 +112,12 @@ pub async fn config_page(State(ctx): State<AppContext>) -> Html<String> {
         <div id="config-sections">Loading...</div>
     "#;
 
-    Html(templates::render_config_page(content, &ctx.api_token))
+    let token = if ctx.auth_required {
+        &ctx.api_token
+    } else {
+        ""
+    };
+    Html(templates::render_config_page(content, token))
 }
 
 /// Config validation API endpoint.

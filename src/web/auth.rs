@@ -24,6 +24,11 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    // Skip auth entirely when dashboard is localhost-only
+    if !ctx.auth_required {
+        return Ok(next.run(request).await);
+    }
+
     let token_from_header = request
         .headers()
         .get("authorization")

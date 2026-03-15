@@ -24,7 +24,7 @@
 
 <h4 align="center">Get Aegis running in 30 seconds</h4>
 
-**Option 1: APT repository** (Debian/Ubuntu) — recommended, auto-updates:
+**Option 1: APT repository** (Debian/Ubuntu) — recommended:
 ```bash
 curl -fsSL https://christosg.github.io/aegis/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/aegis.gpg
 echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/aegis stable main" | sudo tee /etc/apt/sources.list.d/aegis.list
@@ -32,6 +32,7 @@ sudo apt update && sudo apt install aegis-full
 sudo aegis init
 sudo systemctl enable --now aegis
 ```
+> Update to latest: `sudo apt update && sudo apt install --only-upgrade aegis-full`
 
 **Option 2: Install script** — works on any Linux distro:
 ```bash
@@ -150,7 +151,7 @@ $ sudo aegis scan
 | **Anomaly** | Unusual login times, cron/sudoers changes, new user accounts, kernel module integrity |
 | **Honeypot** | Decoy port listeners with automatic IP blocking on connection |
 | **Cert Monitoring** | TLS certificate expiry monitoring with configurable warning threshold |
-| **Web Dashboard** | Real-time security dashboard with 6 pages, WebSocket live feed, token auth (opt-in) |
+| **Web Dashboard** | Real-time security dashboard with 6 pages, WebSocket live feed, auto token auth when network-exposed |
 | **Auto-Response** | Blocks IPs via iptables/nftables/ufw, kills malicious processes |
 | **Threat Dedup** | Cross-run deduplication with configurable TTL &mdash; same threat won't re-alert within the window |
 | **JSONL Logging** | All threats persisted to `~/.aegis/threats.jsonl` for history, reports, and `aegis threats` |
@@ -1278,13 +1279,21 @@ Then restart: `sudo systemctl restart aegis`
 
 ### Accessing the dashboard
 
-The dashboard runs at `https://127.0.0.1:9443`. To log in, you need the API token:
+**Localhost (default)** — when `bind = "127.0.0.1"` (the default), no authentication is needed. Just open:
+
+```
+http://127.0.0.1:9443
+```
+
+Since only local processes can reach the dashboard, requiring a token adds no real security — anyone with shell access can already read the token file.
+
+**Remote access** — when `bind = "0.0.0.0"` (or any non-localhost address), token authentication is enforced automatically. Get the token with:
 
 ```bash
 sudo cat /etc/aegis/api.token
 ```
 
-The token is auto-generated on first start (64-char hex string). You can authenticate via the URL `https://127.0.0.1:9443/?token=YOUR_TOKEN` — it sets a session cookie so you only need the token once.
+The token is auto-generated on first start (64-char hex string). Authenticate via the URL `http://<your-ip>:9443/?token=YOUR_TOKEN` — it sets a session cookie so you only need the token once.
 
 ### Pages
 
@@ -1300,7 +1309,7 @@ The token is auto-generated on first start (64-char hex string). You can authent
 ### Features
 
 - **WebSocket live feed** — threats stream to the dashboard in real-time
-- **Token-based auth** — constant-time comparison, secure cookie storage
+- **Token-based auth** — required only when exposed to the network; skipped for localhost. Constant-time comparison, secure cookie storage
 - **Rate limiting** — 120 req/min for reads, 10 req/min for mutative operations
 - **CORS protection** — configurable allowed origins
 - **Mobile responsive** — works on all screen sizes

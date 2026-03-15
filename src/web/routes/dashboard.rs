@@ -10,7 +10,12 @@ use crate::web::templates;
 
 pub async fn dashboard_page(State(ctx): State<AppContext>) -> Result<Html<String>, StatusCode> {
     let state = ctx.state.read().await;
-    let html = templates::render_dashboard(&state, &ctx.api_token);
+    let token = if ctx.auth_required {
+        &ctx.api_token
+    } else {
+        ""
+    };
+    let html = templates::render_dashboard(&state, token);
     Ok(Html(html))
 }
 

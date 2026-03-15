@@ -222,9 +222,10 @@ linger_seconds = 10
 
 [dashboard]
 enabled = true
-# Bind address (use 127.0.0.1 for local-only access)
+# Bind address — "127.0.0.1" = local-only (no login needed),
+# "0.0.0.0" = network-exposed (token auth enforced automatically)
 bind = "127.0.0.1"
 # Web dashboard port
 port = 9443
-# Path to API token file (generated on first run)
+# Path to API token file (generated on first run, used only when bind is non-localhost)
 token_file = "/etc/aegis/api.token"

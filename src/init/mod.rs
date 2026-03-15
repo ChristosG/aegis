@@ -172,7 +172,7 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
     } else {
         println!("\n  {}", "Phase 8: Web Dashboard".bold());
         println!("  {}", "-".repeat(40).dimmed());
-        println!("    Enable the web dashboard? (accessible at https://127.0.0.1:9443) [y/N] ");
+        println!("    Enable the web dashboard? (accessible at http://127.0.0.1:9443) [y/N] ");
 
         let mut answer = String::new();
         let enable_dashboard = if std::io::stdin().read_line(&mut answer).is_ok() {
@@ -240,12 +240,18 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
                 "    {}",
                 "Dashboard will be available after starting the service:".dimmed()
             );
-            println!("      URL:   https://127.0.0.1:{}", config.dashboard.port);
-            println!("      Token: {}", token);
-            println!(
-                "    {}",
-                "(token also stored in /etc/aegis/api.token)".dimmed()
-            );
+            let bind = &config.dashboard.bind;
+            let is_localhost = matches!(bind.as_str(), "127.0.0.1" | "::1" | "localhost");
+            println!("      URL:   http://{}:{}", bind, config.dashboard.port);
+            if is_localhost {
+                println!("    {}", "(no login needed for localhost)".dimmed());
+            } else {
+                println!("      Token: {}", token);
+                println!(
+                    "    {}",
+                    "(token also stored in /etc/aegis/api.token)".dimmed()
+                );
+            }
 
             format!("enabled on port {}", config.dashboard.port)
         } else {

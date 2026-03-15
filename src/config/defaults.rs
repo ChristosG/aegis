@@ -91,6 +91,56 @@ pub fn resolve_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Merge missing keys/sections from the default config into an existing user
+/// config file. Preserves all user values and comments, only appends new keys.
+///
+/// Returns the number of keys added, or an error.
+pub fn merge_default_into(config_path: &Path) -> Result<usize> {
+    let user_content =
+        std::fs::read_to_string(config_path).context("Failed to read user config")?;
+    let default_content = generate_default_toml();
+
+    let mut user_doc: toml_edit::DocumentMut = user_content
+        .parse()
+        .context("Failed to parse user config as TOML")?;
+    let default_doc: toml_edit::DocumentMut = default_content
+        .parse()
+        .context("Failed to parse default config as TOML")?;
+
+    let mut added = 0usize;
+
+    // Iterate over top-level items in the default config
+    for (key, default_item) in default_doc.iter() {
+        if !user_doc.contains_key(key) {
+            // Entire section/key missing — add it
+            user_doc[key] = default_item.clone();
+            added += 1;
+        } else if let (Some(default_table), Some(user_table)) =
+            (default_item.as_table(), user_doc[key].as_table())
+        {
+            // Section exists — check for missing keys within it
+            let mut missing_keys: Vec<(String, toml_edit::Item)> = Vec::new();
+            for (sub_key, sub_item) in default_table.iter() {
+                if !user_table.contains_key(sub_key) {
+                    missing_keys.push((sub_key.to_string(), sub_item.clone()));
+                    added += 1;
+                }
+            }
+            // Apply missing keys (can't mutate while iterating)
+            for (sub_key, sub_item) in missing_keys {
+                user_doc[key][&sub_key] = sub_item;
+            }
+        }
+    }
+
+    if added > 0 {
+        std::fs::write(config_path, user_doc.to_string())
+            .context("Failed to write merged config")?;
+    }
+
+    Ok(added)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

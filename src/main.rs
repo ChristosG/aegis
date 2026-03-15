@@ -97,6 +97,7 @@ async fn main() -> Result<()> {
         Commands::Fi { on, off } => cmd_fi(config, on, off).await,
         Commands::Update { check, force } => cmd_update(config, check, force).await,
         Commands::InitMail => cmd_init_mail(config),
+        Commands::ConfigUpgrade => cmd_config_upgrade(),
         Commands::Init {
             skip_sysctl,
             skip_baseline,
@@ -227,10 +228,14 @@ async fn cmd_watch(config: aegis::config::schema::AegisConfig, foreground: bool)
 
     // Handle SIGINT / SIGTERM for graceful shutdown.
     tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for ctrl-c");
-        info!("Received shutdown signal");
+        let ctrl_c = tokio::signal::ctrl_c();
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("Failed to register SIGTERM handler");
+
+        tokio::select! {
+            _ = ctrl_c => info!("Received SIGINT, shutting down gracefully"),
+            _ = sigterm.recv() => info!("Received SIGTERM, shutting down gracefully"),
+        }
         cancel_clone.cancel();
     });
 
@@ -737,4 +742,28 @@ fn cmd_init(
         skip_dashboard,
     };
     aegis::init::run_init(&config, &flags)
+}
+
+/// Merge new default config keys into the user's existing aegis.toml.
+fn cmd_config_upgrade() -> Result<()> {
+    let config_path = aegis::config::defaults::find_config_path(None);
+    match config_path {
+        Some(path) => {
+            let added = aegis::config::defaults::merge_default_into(&path)?;
+            if added > 0 {
+                println!(
+                    "  Config upgraded: {} new option(s) added to {}",
+                    added,
+                    path.display()
+                );
+            } else {
+                println!("  Config up to date: {}", path.display());
+            }
+            Ok(())
+        }
+        None => {
+            println!("  No config file found. Run 'aegis init' for initial setup.");
+            Ok(())
+        }
+    }
 }

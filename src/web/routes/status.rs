@@ -162,7 +162,12 @@ pub async fn status_page(State(ctx): State<AppContext>) -> Html<String> {
         top_ips_rows = top_ips_rows,
     );
 
-    Html(templates::render_status_page(&content, &ctx.api_token))
+    let token = if ctx.auth_required {
+        &ctx.api_token
+    } else {
+        ""
+    };
+    Html(templates::render_status_page(&content, token))
 }
 
 pub async fn api_status(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
