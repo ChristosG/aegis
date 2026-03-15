@@ -19,6 +19,7 @@ fn page_wrapper(title: &str, content: &str, token: &str) -> String {
         <div class="logo">AEGIS</div>
         <a href="/?token={token}" class="nav-link">Dashboard</a>
         <a href="/threats?token={token}" class="nav-link">Threats</a>
+        <a href="/firewall?token={token}" class="nav-link">Firewall</a>
     </nav>
     <main class="content">
         <header class="top-bar">
@@ -80,7 +81,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 r#"<tr data-severity="{sev_lower}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
-                    <td class="has-tooltip" title="{full_desc}" data-tooltip="{full_desc}">{description}</td>
+                    <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
                     <td>{ip}</td>
                     <td>{time}</td>
                 </tr>"#,
@@ -181,7 +182,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                 r#"<tr data-severity="{sev_lower}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
-                    <td class="has-tooltip" title="{full_desc}" data-tooltip="{full_desc}">{description}</td>
+                    <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
                     <td>{ip}</td>
                     <td>{module}</td>
                     <td>{responded}</td>
@@ -258,6 +259,112 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
     );
 
     page_wrapper("Threats", &content, token)
+}
+
+pub fn render_firewall_page(state: &AppState, token: &str) -> String {
+    let block_rows: String = state
+        .blocked_ips
+        .values()
+        .map(|b| {
+            let expired = b
+                .expires_at
+                .is_some_and(|exp| exp < chrono::Utc::now());
+            let expires_str = b
+                .expires_at
+                .map_or("Never".to_string(), |exp| exp.format("%Y-%m-%d %H:%M:%S").to_string());
+            let row_class = if expired { r#" class="row-expired""# } else { "" };
+            let expired_tag = if expired { " (expired)" } else { "" };
+            let auto_str = if b.auto { "Yes" } else { "No" };
+            format!(
+                r#"<tr{row_class}>
+                    <td>{ip}</td>
+                    <td>{reason}</td>
+                    <td>{blocked_at}</td>
+                    <td>{expires}{expired_tag}</td>
+                    <td>{auto_str}</td>
+                    <td><button class="btn-sm" onclick="fwUnblock('{ip}')">Unblock</button></td>
+                </tr>"#,
+                row_class = row_class,
+                ip = b.ip,
+                reason = html_escape(&b.reason),
+                blocked_at = b.blocked_at.format("%Y-%m-%d %H:%M:%S"),
+                expires = expires_str,
+                expired_tag = expired_tag,
+                auto_str = auto_str,
+            )
+        })
+        .collect();
+
+    let wl_rows: String = state
+        .config
+        .response
+        .whitelist
+        .iter()
+        .map(|cidr| {
+            format!(
+                r#"<tr>
+                    <td>{cidr}</td>
+                    <td><button class="btn-sm" onclick="fwRemoveWhitelist('{cidr}')">Remove</button></td>
+                </tr>"#,
+                cidr = html_escape(cidr),
+            )
+        })
+        .collect();
+
+    let content = format!(
+        r#"
+        <div class="section">
+            <h3>Block IP</h3>
+            <div class="fw-form">
+                <input type="text" id="block-ip-input" class="fw-input" placeholder="IP address" />
+                <input type="text" id="block-reason-input" class="fw-input fw-input-wide" placeholder="Reason (optional)" />
+                <input type="text" id="block-duration-input" class="fw-input" placeholder="Duration (default: 24h)" />
+                <button onclick="fwBlockIp()">Block</button>
+            </div>
+        </div>
+        <div class="section">
+            <h3>Blocked IPs <span class="section-count" id="block-count">{block_count}</span></h3>
+            <table class="threats-table" id="blocks-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" onclick="sortTable('blocks-table',0)">IP</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',1)">Reason</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',2)">Blocked At</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',3)">Expires</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',4)">Auto</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="blocks-table-body">{block_rows}</tbody>
+            </table>
+        </div>
+        <div class="section">
+            <h3>Add to Whitelist</h3>
+            <div class="fw-form">
+                <input type="text" id="wl-cidr-input" class="fw-input fw-input-wide" placeholder="IP or CIDR (e.g. 10.0.0.0/8)" />
+                <button onclick="fwAddWhitelist()">Add</button>
+            </div>
+        </div>
+        <div class="section">
+            <h3>Whitelisted CIDRs <span class="section-count" id="wl-count">{wl_count}</span></h3>
+            <table class="threats-table" id="whitelist-table">
+                <thead>
+                    <tr>
+                        <th class="sortable" onclick="sortTable('whitelist-table',0)">CIDR</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="whitelist-table-body">{wl_rows}</tbody>
+            </table>
+        </div>
+        "#,
+        block_count = state.blocked_ips.len(),
+        block_rows = block_rows,
+        wl_count = state.config.response.whitelist.len(),
+        wl_rows = wl_rows,
+    );
+
+    page_wrapper("Firewall", &content, token)
 }
 
 fn severity_class(sev: ThreatSeverity) -> &'static str {

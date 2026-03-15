@@ -1,6 +1,7 @@
 pub mod blocks;
 pub mod config;
 pub mod dashboard;
+pub mod firewall;
 pub mod report;
 pub mod scan;
 pub mod threats;

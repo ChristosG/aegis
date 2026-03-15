@@ -59,6 +59,7 @@ pub async fn start_server(
         // HTML pages
         .route("/", get(routes::dashboard::dashboard_page))
         .route("/threats", get(routes::threats::threats_page))
+        .route("/firewall", get(routes::firewall::firewall_page))
         // Health check (no auth)
         .route("/health", get(routes::dashboard::health))
         // API routes

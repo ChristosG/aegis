@@ -204,11 +204,13 @@ function updateFilterButtons() {
 (function() {
     var hasDashboard = !!document.querySelector('[data-stat="total-threats"]');
     var hasThreatsPage = !!document.getElementById('threats-table-body');
-    if (!hasDashboard && !hasThreatsPage) return;
+    var hasFirewallPage = !!document.getElementById('blocks-table-body');
+    if (!hasDashboard && !hasThreatsPage && !hasFirewallPage) return;
 
     setInterval(function() {
         if (hasDashboard) refreshStats();
-        refreshThreatTable();
+        if (hasDashboard || hasThreatsPage) refreshThreatTable();
+        if (hasFirewallPage) refreshFirewallTables();
     }, 15000);
 })();
 
@@ -274,7 +276,6 @@ function buildDashboardRow(t) {
 
     var tdDesc = document.createElement('td');
     tdDesc.className = 'has-tooltip';
-    tdDesc.title = desc;
     tdDesc.setAttribute('data-tooltip', desc);
     tdDesc.textContent = truncateStr(desc, 80);
     tr.appendChild(tdDesc);
@@ -311,7 +312,6 @@ function buildThreatsPageRow(t) {
 
     var tdDesc = document.createElement('td');
     tdDesc.className = 'has-tooltip';
-    tdDesc.title = desc;
     tdDesc.setAttribute('data-tooltip', desc);
     tdDesc.textContent = truncateStr(desc, 60);
     tr.appendChild(tdDesc);
@@ -534,6 +534,201 @@ function unblockIp(ip) {
             showResult('Unblock Failed', 'Error: ' + err, true);
         });
     });
+}
+
+// === Firewall Page ===
+function fwBlockIp() {
+    var ip = document.getElementById('block-ip-input').value.trim();
+    if (!ip) return;
+    var reason = document.getElementById('block-reason-input').value.trim() || undefined;
+    var duration = document.getElementById('block-duration-input').value.trim() || undefined;
+
+    var payload = { ip: ip };
+    if (reason) payload.reason = reason;
+    if (duration) payload.duration = duration;
+
+    fetch('/api/block?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+    .then(function(res) {
+        if (res.ok) {
+            document.getElementById('block-ip-input').value = '';
+            document.getElementById('block-reason-input').value = '';
+            document.getElementById('block-duration-input').value = '';
+            refreshFirewallTables();
+        } else {
+            showResult('Block Failed', res.data.message || 'Unknown error', true);
+        }
+    })
+    .catch(function(err) {
+        showResult('Block Failed', 'Error: ' + err, true);
+    });
+}
+
+function fwUnblock(ip) {
+    showConfirm('Unblock IP', 'Unblock IP address ' + ip + '?', function() {
+        fetch('/api/unblock?token=' + API_TOKEN, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ip: ip })
+        })
+        .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+        .then(function(res) {
+            if (res.ok) {
+                refreshFirewallTables();
+            } else {
+                showResult('Unblock Failed', res.data.message || 'Unknown error', true);
+            }
+        })
+        .catch(function(err) {
+            showResult('Unblock Failed', 'Error: ' + err, true);
+        });
+    });
+}
+
+function fwAddWhitelist() {
+    var cidr = document.getElementById('wl-cidr-input').value.trim();
+    if (!cidr) return;
+
+    fetch('/api/whitelist?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr: cidr })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'ok') {
+            document.getElementById('wl-cidr-input').value = '';
+            refreshFirewallTables();
+        } else {
+            showResult('Whitelist Failed', data.message || 'Unknown error', true);
+        }
+    })
+    .catch(function(err) {
+        showResult('Whitelist Failed', 'Error: ' + err, true);
+    });
+}
+
+function fwRemoveWhitelist(cidr) {
+    showConfirm('Remove from Whitelist', 'Remove ' + cidr + ' from whitelist?', function() {
+        fetch('/api/whitelist/' + encodeURIComponent(cidr) + '?token=' + API_TOKEN, {
+            method: 'DELETE'
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.status === 'ok') {
+                refreshFirewallTables();
+            } else {
+                showResult('Remove Failed', data.message || 'Unknown error', true);
+            }
+        })
+        .catch(function(err) {
+            showResult('Remove Failed', 'Error: ' + err, true);
+        });
+    });
+}
+
+function refreshFirewallTables() {
+    // Refresh blocked IPs
+    fetch('/api/blocks?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var tbody = document.getElementById('blocks-table-body');
+            if (!tbody || !data.blocked_ips) return;
+            while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+            data.blocked_ips.forEach(function(b) {
+                var now = new Date();
+                var expiresAt = b.expires_at ? new Date(b.expires_at) : null;
+                var expired = expiresAt && expiresAt < now;
+
+                var tr = document.createElement('tr');
+                if (expired) tr.className = 'row-expired';
+
+                var tdIp = document.createElement('td');
+                tdIp.textContent = b.ip;
+                tr.appendChild(tdIp);
+
+                var tdReason = document.createElement('td');
+                tdReason.textContent = b.reason || '';
+                tr.appendChild(tdReason);
+
+                var tdBlocked = document.createElement('td');
+                tdBlocked.textContent = formatTimeFull(b.blocked_at);
+                tr.appendChild(tdBlocked);
+
+                var tdExpires = document.createElement('td');
+                tdExpires.textContent = expiresAt ? formatTimeFull(b.expires_at) : 'Never';
+                if (expired) tdExpires.textContent += ' (expired)';
+                tr.appendChild(tdExpires);
+
+                var tdAuto = document.createElement('td');
+                tdAuto.textContent = b.auto ? 'Yes' : 'No';
+                tr.appendChild(tdAuto);
+
+                var tdActions = document.createElement('td');
+                var btn = document.createElement('button');
+                btn.className = 'btn-sm';
+                btn.textContent = 'Unblock';
+                btn.onclick = function() { fwUnblock(b.ip); };
+                tdActions.appendChild(btn);
+                tr.appendChild(tdActions);
+
+                tbody.appendChild(tr);
+            });
+
+            var countEl = document.getElementById('block-count');
+            if (countEl) countEl.textContent = data.blocked_ips.length;
+
+            // Re-apply sort if active
+            if (sortState['blocks-table']) {
+                var s = sortState['blocks-table'];
+                sortState['blocks-table'] = { col: s.col, dir: s.dir === 'asc' ? 'desc' : 'asc' };
+                sortTable('blocks-table', s.col);
+            }
+        })
+        .catch(function() {});
+
+    // Refresh whitelist
+    fetch('/api/whitelist?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var tbody = document.getElementById('whitelist-table-body');
+            if (!tbody || !data.whitelist) return;
+            while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+            data.whitelist.forEach(function(cidr) {
+                var tr = document.createElement('tr');
+
+                var tdCidr = document.createElement('td');
+                tdCidr.textContent = cidr;
+                tr.appendChild(tdCidr);
+
+                var tdActions = document.createElement('td');
+                var btn = document.createElement('button');
+                btn.className = 'btn-sm';
+                btn.textContent = 'Remove';
+                btn.onclick = function() { fwRemoveWhitelist(cidr); };
+                tdActions.appendChild(btn);
+                tr.appendChild(tdActions);
+
+                tbody.appendChild(tr);
+            });
+
+            var countEl = document.getElementById('wl-count');
+            if (countEl) countEl.textContent = data.whitelist.length;
+
+            // Re-apply sort if active
+            if (sortState['whitelist-table']) {
+                var s = sortState['whitelist-table'];
+                sortState['whitelist-table'] = { col: s.col, dir: s.dir === 'asc' ? 'desc' : 'asc' };
+                sortTable('whitelist-table', s.col);
+            }
+        })
+        .catch(function() {});
 }
 
 // === Helpers ===
