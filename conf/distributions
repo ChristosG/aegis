@@ -1,0 +1,7 @@
+Origin: Aegis
+Label: Aegis
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: Aegis Linux Security Monitoring
+SignWith: default

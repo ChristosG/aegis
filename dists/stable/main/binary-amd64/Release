@@ -1,0 +1,5 @@
+Component: main
+Origin: Aegis
+Label: Aegis
+Architecture: amd64
+Description: Aegis Linux Security Monitoring

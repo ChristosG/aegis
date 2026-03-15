@@ -1,0 +1,28 @@
+Origin: Aegis
+Label: Aegis
+Codename: stable
+Date: Sun, 15 Mar 2026 21:39:45 UTC
+Architectures: amd64 arm64
+Components: main
+Description: Aegis Linux Security Monitoring
+MD5Sum:
+ 2d9d4fc75bd5b8a01d323efb0ee446e7 1462 main/binary-amd64/Packages
+ 6fdc419a4ab13fc1c3db80a8fa56a082 680 main/binary-amd64/Packages.gz
+ b5286484d798333c0b73d5d804793242 108 main/binary-amd64/Release
+ 2876c32520f19aca4acfb3ac74ff349f 1461 main/binary-arm64/Packages
+ 497fd2730bb7e7f8f6bc60d85ff93c09 681 main/binary-arm64/Packages.gz
+ 5b293232f7cff94481a676ab015f94c8 108 main/binary-arm64/Release
+SHA1:
+ 8fdebcfd45064c591539b4cdc6feab559f970cf9 1462 main/binary-amd64/Packages
+ 614c8f258a0697cda8d53812ec6435ee62aedb35 680 main/binary-amd64/Packages.gz
+ fcd572c70f7646d6a7608ea19254b4d8536e07c3 108 main/binary-amd64/Release
+ 51483dcaf59031e01765de74b435e8d4b877abd2 1461 main/binary-arm64/Packages
+ b296f9f0dff8a827af8179f5379caca5778664dc 681 main/binary-arm64/Packages.gz
+ dd399189261790b2ae3ff06fb671ee7374454085 108 main/binary-arm64/Release
+SHA256:
+ e7cdd4f3a195a5e496959f2e66aad2a498266faf85774ffb14f5299ab02330b7 1462 main/binary-amd64/Packages
+ a204d3f62c0f215a4168e27ce63ce2634ca3aff0fe31aeb4c89e093baf3102f0 680 main/binary-amd64/Packages.gz
+ 4976b97e66d114b004c8a7a3c5e53eed2d4a81986d6def337177fc287466bd9e 108 main/binary-amd64/Release
+ 96d4c60e34dcb5dc7f89fd67f3da7489b6d38b3e13ab802fa5a08bc3639df18a 1461 main/binary-arm64/Packages
+ f47d256ff4a5332d3a385fc4f40e0d2a297ea32146329ae27fa73e0f6851d52d 681 main/binary-arm64/Packages.gz
+ 58fc6a41380227433cd0d3d614eedb7867a07763c528255713c9d6aaa688e644 108 main/binary-arm64/Release
