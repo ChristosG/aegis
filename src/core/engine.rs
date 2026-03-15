@@ -70,12 +70,31 @@ impl Engine {
         let storage = Storage::new(&data_dir);
         if let Ok(blocked) = storage.load_block_list() {
             if !blocked.is_empty() {
-                info!(
-                    count = blocked.len(),
-                    "Loaded {} previously blocked IP(s) from disk",
-                    blocked.len()
-                );
-                initial_state.blocked_ips = blocked;
+                // Filter out expired blocks before restoring
+                let now = chrono::Utc::now();
+                let active: std::collections::HashMap<_, _> = blocked
+                    .into_iter()
+                    .filter(|(_, entry)| entry.expires_at.map_or(true, |exp| exp > now))
+                    .collect();
+
+                if !active.is_empty() {
+                    info!(
+                        count = active.len(),
+                        "Restoring {} blocked IP(s) from disk",
+                        active.len()
+                    );
+                    // Re-apply firewall rules for persisted blocks
+                    let mut restored = 0u32;
+                    for ip in active.keys() {
+                        if let Err(e) = response_engine.block_ip_firewall(ip) {
+                            warn!(ip = %ip, error = %e, "Failed to restore firewall block");
+                        } else {
+                            restored += 1;
+                        }
+                    }
+                    info!(restored, "Restored firewall rules for blocked IPs");
+                    initial_state.blocked_ips = active;
+                }
             }
         }
 

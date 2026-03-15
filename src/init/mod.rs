@@ -167,17 +167,12 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
     } else if config.dashboard.enabled {
         println!("\n  {}", "Phase 8: Web Dashboard".bold());
         println!("  {}", "-".repeat(40).dimmed());
-        println!(
-            "    {} Already enabled in config",
-            "OK".green().bold()
-        );
+        println!("    {} Already enabled in config", "OK".green().bold());
         "already enabled".to_string()
     } else {
         println!("\n  {}", "Phase 8: Web Dashboard".bold());
         println!("  {}", "-".repeat(40).dimmed());
-        println!(
-            "    Enable the web dashboard? (accessible at https://127.0.0.1:9443) [y/N] "
-        );
+        println!("    Enable the web dashboard? (accessible at https://127.0.0.1:9443) [y/N] ");
 
         let mut answer = String::new();
         let enable_dashboard = if std::io::stdin().read_line(&mut answer).is_ok() {
@@ -245,10 +240,7 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
                 "    {}",
                 "Dashboard will be available after starting the service:".dimmed()
             );
-            println!(
-                "      URL:   https://127.0.0.1:{}",
-                config.dashboard.port
-            );
+            println!("      URL:   https://127.0.0.1:{}", config.dashboard.port);
             println!("      Token: {}", token);
             println!(
                 "    {}",

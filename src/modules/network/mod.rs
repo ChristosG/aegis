@@ -448,19 +448,13 @@ impl NetworkModule {
                         "New outbound connection to {}:{} by process '{}'",
                         dest_ip, dest_port, name
                     ),
-                    None => format!(
-                        "New outbound connection to {}:{}",
-                        dest_ip, dest_port
-                    ),
+                    None => format!("New outbound connection to {}:{}", dest_ip, dest_port),
                 };
 
-                let mut event = ThreatEvent::new(
-                    ThreatType::NewOutboundDestination,
-                    "network",
-                    &description,
-                )
-                .with_target(format!("{}:{}", dest_ip, dest_port))
-                .with_detail("dest_port", dest_port.to_string());
+                let mut event =
+                    ThreatEvent::new(ThreatType::NewOutboundDestination, "network", &description)
+                        .with_target(format!("{}:{}", dest_ip, dest_port))
+                        .with_detail("dest_port", dest_port.to_string());
 
                 if let Some(name) = &process_name {
                     event = event.with_detail("process", name.clone());

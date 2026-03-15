@@ -221,7 +221,7 @@ auto_block = true
 linger_seconds = 10
 
 [dashboard]
-enabled = false
+enabled = true
 # Bind address (use 127.0.0.1 for local-only access)
 bind = "127.0.0.1"
 # Web dashboard port

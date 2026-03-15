@@ -24,25 +24,28 @@
 
 <h4 align="center">Get Aegis running in 30 seconds</h4>
 
-**CLI only** — terminal monitoring & automated response:
-```bash
-curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
-```
-
-**Full install** — includes the web dashboard:
-```bash
-curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
-```
-
-**APT repository** (Debian/Ubuntu) — auto-updates:
+**Option 1: APT repository** (Debian/Ubuntu) — recommended, auto-updates:
 ```bash
 curl -fsSL https://christosg.github.io/aegis/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/aegis.gpg
 echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/aegis stable main" | sudo tee /etc/apt/sources.list.d/aegis.list
 sudo apt update && sudo apt install aegis-full
+sudo aegis init
+sudo systemctl enable --now aegis
 ```
 
-**Uninstall** — cleanly removes everything:
+**Option 2: Install script** — works on any Linux distro:
 ```bash
+# CLI only
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
+# Full (with web dashboard)
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
+```
+
+**Uninstall:**
+```bash
+# APT
+sudo apt remove aegis-full    # or aegis
+# Install script
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
@@ -167,22 +170,24 @@ $ sudo aegis scan
 ## Quick Start
 
 ```bash
-# Build
-git clone https://github.com/chrismannina/aegis.git
-cd aegis
-cargo build --release
+# Install (Debian/Ubuntu)
+sudo apt install aegis-full    # after adding APT repo (see Installation)
 
-# Full system hardening (config, sysctl, baseline, firewall, fail2ban, systemd)
-sudo ./target/release/aegis init
+# Or build from source
+git clone https://github.com/ChristosG/aegis.git
+cd aegis && cargo build --release
+
+# Full system hardening (config, sysctl, baseline, firewall, fail2ban, systemd, dashboard)
+sudo aegis init
 
 # Run a full scan
-sudo ./target/release/aegis scan
+sudo aegis scan
 
 # Run with auto-response (blocks attackers, kills miners)
-sudo ./target/release/aegis scan --auto-respond
+sudo aegis scan --auto-respond
 
 # Start daemon mode
-sudo ./target/release/aegis watch --foreground
+sudo systemctl enable --now aegis
 ```
 
 ---
@@ -191,19 +196,32 @@ sudo ./target/release/aegis watch --foreground
 
 > **Why sudo?** Aegis installs to root-owned paths (`/usr/local/bin`, `/etc/aegis`, `/lib/systemd/system`) and the daemon needs root capabilities (`CAP_NET_ADMIN`, `CAP_DAC_READ_SEARCH`, `CAP_KILL`, `CAP_NET_BIND_SERVICE`) to manage firewalls, read `/proc`, kill malicious processes, and bind low ports. This is the same privilege model used by fail2ban, ossec, and suricata.
 
-### APT repository (Debian/Ubuntu)
+### APT repository (Debian/Ubuntu) — recommended
 
 Add the repo once, then install and get automatic updates:
 
 ```bash
+# Add signing key and repository (one-time)
 curl -fsSL https://christosg.github.io/aegis/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/aegis.gpg
 echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/aegis stable main" | sudo tee /etc/apt/sources.list.d/aegis.list
-sudo apt update && sudo apt install aegis          # CLI only
+
+# Install
+sudo apt update
+sudo apt install aegis          # CLI only
 # or
-sudo apt update && sudo apt install aegis-full     # with web dashboard
+sudo apt install aegis-full     # with web dashboard
+
+# Initialize and start
+sudo aegis init
+sudo systemctl enable --now aegis
 ```
 
-Upgrades preserve your `/etc/aegis/aegis.toml` automatically.
+**Updating:**
+```bash
+sudo apt update && sudo apt install --only-upgrade aegis-full
+```
+
+Your `/etc/aegis/aegis.toml` is preserved automatically on upgrades.
 
 ### .deb package (manual download)
 
@@ -212,57 +230,50 @@ Download the `.deb` from the [latest release](https://github.com/ChristosG/aegis
 ```bash
 sudo dpkg -i aegis_*.deb
 sudo apt-get install -f    # install any missing dependencies
+sudo aegis init
+sudo systemctl enable --now aegis
 ```
 
-### From source (recommended for development)
+### Install script (any Linux distro)
 
 ```bash
-git clone https://github.com/chrismannina/aegis.git
+# CLI only
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
+# Full (with web dashboard)
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
+```
+
+The install script downloads a pre-built tarball, installs the binary, config, and systemd service, then runs `aegis init` automatically.
+
+### From source
+
+```bash
+git clone https://github.com/ChristosG/aegis.git
 cd aegis
 cargo build --release
-```
 
-### System-wide setup (automated)
-
-The recommended way to set up Aegis system-wide is via `aegis init`, which handles everything in one command:
-
-```bash
+# System-wide setup
 sudo ./target/release/aegis init
+
+# Start
+sudo systemctl enable --now aegis
 ```
 
-This runs 7 phases: prerequisite checks, config/data directory creation, kernel hardening (sysctl), file integrity baseline, iptables dedup cleanup, fail2ban jail installation, and systemd service setup. See [System Hardening Init](#system-hardening-init) for details.
-
-### Manual setup (alternative)
-
-If you prefer to set up each piece manually:
-
-```bash
-# Install binary
-sudo cp target/release/aegis /usr/local/bin/
-
-# Install config
-sudo mkdir -p /etc/aegis
-sudo cp aegis.toml /etc/aegis/aegis.toml
-
-# Create data directory
-sudo mkdir -p /root/.aegis
-
-# Install systemd service (optional)
-sudo cp aegis.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable aegis
-```
+For the web dashboard variant, build with `cargo build --release --features web-dashboard`.
 
 ### Uninstall
 
-Completely remove aegis and all its artifacts:
+**APT:**
+```bash
+sudo apt remove aegis-full    # or aegis
+```
 
+**Install script / manual:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 Or run locally if you want interactive prompts before deleting config & data:
-
 ```bash
 sudo bash uninstall.sh
 ```
@@ -271,9 +282,9 @@ This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sy
 
 ### Requirements
 
-- Linux kernel 3.x+ (for `/proc` and inotify support)
-- Rust 1.70+ (for building)
+- Linux (kernel 3.x+ for `/proc` and inotify support)
 - Root access or `CAP_NET_ADMIN + CAP_DAC_READ_SEARCH + CAP_KILL` capabilities
+- Rust 1.70+ (only if building from source)
 
 ---
 
@@ -281,7 +292,7 @@ This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sy
 
 ### System Hardening Init
 
-`aegis init` is a comprehensive first-run command that sets up everything needed for a hardened Linux server in one shot. It requires root and is fully idempotent (safe to run multiple times).
+`aegis init` is a comprehensive first-run command that sets up everything needed for a hardened Linux system in one shot. It requires root and is fully idempotent (safe to run multiple times).
 
 ```bash
 sudo aegis init
@@ -294,10 +305,11 @@ sudo aegis init
 | 1. Prerequisites | Verifies root, checks for iptables/systemctl/sysctl, auto-installs fail2ban if missing |
 | 2. Config & Data | Creates `/etc/aegis/aegis.toml` (never overwrites), `~/.aegis/`, `~/.aegis/feeds/`, `~/.aegis/quarantine/` |
 | 3. Kernel Hardening | Writes 15 sysctl parameters to `/etc/sysctl.d/99-aegis-hardening.conf` (SYN cookies, rp_filter, ASLR, etc.) |
-| 4. Baseline | Generates SHA-256 file integrity baseline (skips if one already exists) |
+| 4. Baseline | Asks whether to enable file integrity monitoring, then generates SHA-256 baseline (skips if one already exists) |
 | 5. Firewall Cleanup | Removes duplicate rules from the `AEGIS_BLOCK` iptables chain, audits INPUT policy |
 | 6. fail2ban | Installs `aegis-threat` filter + jail that reads `threats.jsonl` and bans source IPs (never touches existing jails) |
 | 7. Systemd Service | Copies binary to `/usr/local/bin/aegis`, installs and enables `aegis.service` (does NOT auto-start) |
+| 8. Web Dashboard | Asks whether to enable the dashboard, generates the API token, and prints the URL + token for login |
 
 **Skip individual phases:**
 
@@ -307,6 +319,7 @@ sudo aegis init --skip-baseline            # Skip file integrity baseline
 sudo aegis init --skip-service             # Skip systemd service install
 sudo aegis init --skip-firewall-cleanup    # Skip iptables dedup cleanup
 sudo aegis init --skip-fail2ban            # Skip fail2ban jail setup
+sudo aegis init --skip-dashboard           # Skip web dashboard setup
 ```
 
 **Safety guarantees:**
@@ -1241,11 +1254,37 @@ min_severity = "high"
 
 ## Web Dashboard
 
-Aegis includes an optional web-based security dashboard, enabled via feature flag:
+Aegis includes an optional web-based security dashboard. If you installed `aegis-full` (APT or install script), it's already included. If building from source:
 
 ```bash
 cargo build --release --features web-dashboard
 ```
+
+### Enabling the dashboard
+
+**During `aegis init`** — Phase 8 will ask if you want to enable it and print the URL + API token.
+
+**Manually** — edit `/etc/aegis/aegis.toml`:
+
+```toml
+[dashboard]
+enabled = true
+bind = "127.0.0.1"    # use "0.0.0.0" for remote access
+port = 9443
+token_file = "/etc/aegis/api.token"
+```
+
+Then restart: `sudo systemctl restart aegis`
+
+### Accessing the dashboard
+
+The dashboard runs at `https://127.0.0.1:9443`. To log in, you need the API token:
+
+```bash
+sudo cat /etc/aegis/api.token
+```
+
+The token is auto-generated on first start (64-char hex string). You can authenticate via the URL `https://127.0.0.1:9443/?token=YOUR_TOKEN` — it sets a session cookie so you only need the token once.
 
 ### Pages
 
@@ -1266,15 +1305,6 @@ cargo build --release --features web-dashboard
 - **CORS protection** — configurable allowed origins
 - **Mobile responsive** — works on all screen sizes
 - **PDF reports** — downloadable security reports
-
-### Running
-
-```bash
-# Start Aegis with web dashboard
-sudo aegis watch --foreground
-# Dashboard available at http://localhost:3000
-# Auth token is printed to stdout on first run
-```
 
 ### API
 
@@ -1664,7 +1694,7 @@ aegis scan    # Works without sudo
 ### Build
 
 ```bash
-git clone https://github.com/chrismannina/aegis.git
+git clone https://github.com/ChristosG/aegis.git
 cd aegis
 cargo build --release
 ```
