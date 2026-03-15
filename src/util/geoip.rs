@@ -28,11 +28,12 @@ impl GeoIpLookup {
     /// Look up the ISO country code for an IP address.
     /// Returns None if the lookup fails or the IP is not in the database.
     pub fn lookup_country(&self, ip: &IpAddr) -> Option<String> {
-        match self.reader.lookup::<maxminddb::geoip2::Country>(*ip) {
+        match self.reader.lookup(*ip) {
             Ok(result) => result
-                .country
-                .and_then(|c| c.iso_code)
-                .map(|s| s.to_string()),
+                .decode::<maxminddb::geoip2::Country>()
+                .ok()
+                .flatten()
+                .and_then(|r| r.country.iso_code.map(|s| s.to_string())),
             Err(e) => {
                 debug!(ip = %ip, error = %e, "GeoIP lookup failed");
                 None
