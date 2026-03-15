@@ -1,6 +1,6 @@
 [package]
 name = "aegis"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Linux Security Monitoring & Response Tool"
 license = "MIT"
@@ -63,3 +63,35 @@ tempfile = "3"
 lto = true
 codegen-units = 1
 strip = true
+
+[package.metadata.deb]
+maintainer = "ChristosG"
+depends = "iptables | nftables, systemd"
+recommends = "fail2ban"
+section = "admin"
+priority = "optional"
+conflicts = "aegis-full"
+replaces = "aegis-full"
+provides = "aegis"
+extended-description = """\
+Aegis monitors your Linux server for network attacks, malware, \
+brute-force attempts, file tampering, web exploits, and known-malicious IPs, \
+then automatically blocks them. Single static binary."""
+maintainer-scripts = "debian/scripts/"
+assets = [
+    ["target/release/aegis", "usr/local/bin/", "755"],
+    ["aegis.toml", "etc/aegis/", "644"],
+    ["aegis.service", "lib/systemd/system/", "644"],
+    ["uninstall.sh", "usr/share/aegis/", "755"],
+]
+
+[package.metadata.deb.variants.full]
+name = "aegis-full"
+features = ["web-dashboard"]
+conflicts = "aegis"
+replaces = "aegis"
+provides = "aegis"
+extended-description = """\
+Aegis with web dashboard. Monitors your Linux server for network attacks, \
+malware, brute-force attempts, file tampering, web exploits, and \
+known-malicious IPs, then automatically blocks them."""

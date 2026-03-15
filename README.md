@@ -34,6 +34,13 @@ curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | s
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
 ```
 
+**APT repository** (Debian/Ubuntu) — auto-updates:
+```bash
+curl -fsSL https://christosg.github.io/aegis/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/aegis.gpg
+echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/aegis stable main" | sudo tee /etc/apt/sources.list.d/aegis.list
+sudo apt update && sudo apt install aegis-full
+```
+
 **Uninstall** — cleanly removes everything (prompts before deleting config & data):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash
@@ -182,7 +189,32 @@ sudo ./target/release/aegis watch --foreground
 
 ## Installation
 
-### From source (recommended)
+> **Why sudo?** Aegis installs to root-owned paths (`/usr/local/bin`, `/etc/aegis`, `/lib/systemd/system`) and the daemon needs root capabilities (`CAP_NET_ADMIN`, `CAP_DAC_READ_SEARCH`, `CAP_KILL`, `CAP_NET_BIND_SERVICE`) to manage firewalls, read `/proc`, kill malicious processes, and bind low ports. This is the same privilege model used by fail2ban, ossec, and suricata.
+
+### APT repository (Debian/Ubuntu)
+
+Add the repo once, then install and get automatic updates:
+
+```bash
+curl -fsSL https://christosg.github.io/aegis/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/aegis.gpg
+echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/aegis stable main" | sudo tee /etc/apt/sources.list.d/aegis.list
+sudo apt update && sudo apt install aegis          # CLI only
+# or
+sudo apt update && sudo apt install aegis-full     # with web dashboard
+```
+
+Upgrades preserve your `/etc/aegis/aegis.toml` automatically.
+
+### .deb package (manual download)
+
+Download the `.deb` from the [latest release](https://github.com/ChristosG/aegis/releases/latest) and install directly:
+
+```bash
+sudo dpkg -i aegis_*.deb
+sudo apt-get install -f    # install any missing dependencies
+```
+
+### From source (recommended for development)
 
 ```bash
 git clone https://github.com/chrismannina/aegis.git

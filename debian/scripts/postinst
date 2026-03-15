@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+mkdir -p /root/.aegis
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
+fi
+echo ""
+echo "  Aegis installed. Next steps:"
+echo "    1. sudo aegis init        (system hardening)"
+echo "    2. sudo systemctl enable --now aegis"
+echo "  Config: /etc/aegis/aegis.toml"
+echo ""

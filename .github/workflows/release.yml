@@ -87,9 +87,56 @@ jobs:
           name: ${{ matrix.prefix }}-${{ matrix.target }}
           path: ${{ env.TARBALL }}
 
+  build-deb:
+    name: Build .deb ${{ matrix.variant }} (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            variant: cli
+            deb_flags: ""
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            variant: cli
+            deb_flags: ""
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+            variant: full
+            deb_flags: "--variant=full"
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            variant: full
+            deb_flags: "--variant=full"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo '[target.aarch64-unknown-linux-gnu]' >> ~/.cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> ~/.cargo/config.toml
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deb-${{ matrix.target }}-${{ matrix.variant }}
+      - name: Build .deb
+        run: cargo deb --target ${{ matrix.target }} ${{ matrix.deb_flags }}
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.variant }}-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/debian/*.deb
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-deb]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,7 +149,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.deb > SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -110,4 +157,58 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/*.tar.gz
+            artifacts/*.deb
             artifacts/SHA256SUMS
+
+  publish-apt:
+    name: Publish APT repo
+    needs: build-deb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: debs
+          pattern: deb-*
+          merge-multiple: true
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Fetch existing repo
+        run: |
+          git fetch origin gh-pages:gh-pages 2>/dev/null || true
+          if git rev-parse --verify gh-pages >/dev/null 2>&1; then
+            git worktree add apt-repo gh-pages
+          else
+            mkdir apt-repo
+          fi
+
+      - name: Install reprepro
+        run: sudo apt-get update && sudo apt-get install -y reprepro
+
+      - name: Build APT repository
+        run: |
+          # Copy conf from source
+          mkdir -p apt-repo/conf
+          cp apt/conf/distributions apt-repo/conf/
+          cp apt/gpg.key apt-repo/
+
+          # Add all .deb files
+          for deb in debs/*.deb; do
+            reprepro -b apt-repo includedeb stable "$deb"
+          done
+
+      - name: Push to gh-pages
+        run: |
+          cd apt-repo
+          git init 2>/dev/null || true
+          git checkout -b gh-pages 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "apt: update packages for ${GITHUB_REF#refs/tags/}" --allow-empty
+          git push -f "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" gh-pages
