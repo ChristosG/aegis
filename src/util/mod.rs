@@ -1,3 +1,4 @@
+pub mod geoip;
 pub mod hash;
 pub mod ip;
 pub mod log_cursor;

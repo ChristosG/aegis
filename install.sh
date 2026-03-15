@@ -2,17 +2,36 @@
 set -euo pipefail
 
 # Aegis installer — downloads the latest release binary from GitHub and installs it.
-# Usage: curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash
+# Usage:
+#   CLI-only (default):  curl -fsSL .../install.sh | sudo bash
+#   Full (web dashboard): curl -fsSL .../install.sh | sudo bash -s -- --full
 
 REPO="ChristosG/aegis"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/aegis"
 SERVICE_DIR="/etc/systemd/system"
+VARIANT="cli"
 
 # --- Helpers ---
 info()  { echo -e "\033[1;32m[+]\033[0m $*"; }
 warn()  { echo -e "\033[1;33m[!]\033[0m $*"; }
 error() { echo -e "\033[1;31m[-]\033[0m $*"; exit 1; }
+
+# --- Parse args ---
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --full) VARIANT="full"; shift ;;
+        --help|-h)
+            echo "Usage: install.sh [--full]"
+            echo ""
+            echo "Options:"
+            echo "  --full    Install with web dashboard support"
+            echo ""
+            exit 0
+            ;;
+        *) error "Unknown option: $1" ;;
+    esac
+done
 
 # --- Check root ---
 if [ "$(id -u)" -ne 0 ]; then
@@ -36,7 +55,15 @@ fi
 info "Latest version: v${LATEST}"
 
 # --- Download ---
-TARBALL="aegis-v${LATEST}-${TARGET}.tar.gz"
+if [ "$VARIANT" = "full" ]; then
+    PREFIX="aegis-full"
+    info "Installing full variant (with web dashboard)"
+else
+    PREFIX="aegis"
+    info "Installing CLI-only variant"
+fi
+
+TARBALL="${PREFIX}-v${LATEST}-${TARGET}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/v${LATEST}/${TARBALL}"
 
 info "Downloading ${TARBALL}..."
@@ -70,10 +97,14 @@ fi
 
 # --- Done ---
 echo ""
-info "Aegis v${LATEST} installed successfully!"
+info "Aegis v${LATEST} installed successfully! (variant: ${VARIANT})"
 echo ""
 echo "  Next steps:"
 echo "    1. sudo aegis init            # system hardening setup"
 echo "    2. sudo aegis init-mail       # (optional) email alerts"
 echo "    3. sudo systemctl enable --now aegis"
+if [ "$VARIANT" = "full" ]; then
+    echo "    4. Web dashboard: http://127.0.0.1:9443"
+    echo "       Token: sudo cat /etc/aegis/api.token"
+fi
 echo ""

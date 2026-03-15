@@ -190,11 +190,7 @@ impl ThreatIntelModule {
 
                 // Some feeds (e.g., Spamhaus DROP) have format: "IP ; SB_ID"
                 // or "IP/CIDR ; comment" - extract the first token before any separator
-                let token = line
-                    .split(|c: char| c == ';' || c == ' ' || c == '\t')
-                    .next()
-                    .unwrap_or("")
-                    .trim();
+                let token = line.split([';', ' ', '\t']).next().unwrap_or("").trim();
 
                 if token.is_empty() {
                     continue;

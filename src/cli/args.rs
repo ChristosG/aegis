@@ -2,6 +2,23 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Whitelist management subcommands.
+#[derive(Subcommand, Debug)]
+pub enum WhitelistAction {
+    /// List all whitelisted CIDR ranges.
+    List,
+    /// Add a CIDR range to the whitelist.
+    Add {
+        /// CIDR range to add (e.g. "10.0.0.0/8" or "203.0.113.5").
+        cidr: String,
+    },
+    /// Remove a CIDR range from the whitelist.
+    Remove {
+        /// CIDR range to remove.
+        cidr: String,
+    },
+}
+
 /// Aegis -- Linux Security Monitoring & Response Tool
 #[derive(Parser, Debug)]
 #[command(
@@ -116,7 +133,15 @@ pub enum Commands {
     Baseline,
 
     /// Generate a human-readable security report of all findings.
-    Report,
+    Report {
+        /// Output format: text, html, or pdf.
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Output file path (prints to stdout if not specified).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 
     /// Interactively configure SMTP credentials for email alerts.
     ///
@@ -124,6 +149,26 @@ pub enum Commands {
     /// Stores credentials securely in /etc/aegis/mail.env (mode 0600) and
     /// updates /etc/aegis/aegis.toml with the email settings.
     InitMail,
+
+    /// Validate the current configuration file and report errors/warnings.
+    Check,
+
+    /// Manage the IP whitelist (IPs that are never blocked).
+    Whitelist {
+        #[command(subcommand)]
+        action: WhitelistAction,
+    },
+
+    /// Check for updates or update Aegis to the latest version.
+    Update {
+        /// Only check if an update is available, don't install.
+        #[arg(long)]
+        check: bool,
+
+        /// Force update even if already on latest version.
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Full system hardening setup: config, sysctl, firewall, baseline,
     /// fail2ban, and systemd service installation.

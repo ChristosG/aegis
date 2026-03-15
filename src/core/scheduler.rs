@@ -187,14 +187,14 @@ impl Scheduler {
             anyhow::bail!("Empty duration string");
         }
 
-        let (num_str, unit) = if s.ends_with('d') {
-            (&s[..s.len() - 1], "d")
-        } else if s.ends_with('h') {
-            (&s[..s.len() - 1], "h")
-        } else if s.ends_with('m') {
-            (&s[..s.len() - 1], "m")
-        } else if s.ends_with('s') {
-            (&s[..s.len() - 1], "s")
+        let (num_str, unit) = if let Some(stripped) = s.strip_suffix('d') {
+            (stripped, "d")
+        } else if let Some(stripped) = s.strip_suffix('h') {
+            (stripped, "h")
+        } else if let Some(stripped) = s.strip_suffix('m') {
+            (stripped, "m")
+        } else if let Some(stripped) = s.strip_suffix('s') {
+            (stripped, "s")
         } else {
             // Assume seconds if no unit
             (s, "s")

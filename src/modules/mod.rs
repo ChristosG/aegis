@@ -1,5 +1,7 @@
+pub mod anomaly;
 pub mod auth;
 pub mod file_integrity;
+pub mod honeypot;
 pub mod network;
 pub mod process;
 pub mod threat_intel;
@@ -82,6 +84,18 @@ pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
             "threat_intel" if config.threat_intel.enabled => {
                 modules.push(Arc::new(threat_intel::ThreatIntelModule::new(
                     config.threat_intel.clone(),
+                )));
+            }
+            "honeypot" if config.honeypot.enabled => {
+                modules.push(Arc::new(honeypot::HoneypotModule::new(
+                    config.honeypot.clone(),
+                )));
+            }
+            "anomaly" if config.anomaly.enabled => {
+                let data_dir = crate::config::defaults::resolve_path(&config.general.data_dir);
+                modules.push(Arc::new(anomaly::AnomalyModule::new(
+                    config.anomaly.clone(),
+                    data_dir,
                 )));
             }
             name => {

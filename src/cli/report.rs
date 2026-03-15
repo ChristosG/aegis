@@ -219,7 +219,7 @@ fn write_top_attacking_ips(report: &mut String, state: &AppState) -> Result<()> 
     writeln!(report, "  TOP ATTACKING IP ADDRESSES")?;
     writeln!(report, "{}", "-".repeat(72))?;
     writeln!(report)?;
-    writeln!(report, "  {:<5} {:<40} {}", "#", "IP Address", "Events")?;
+    writeln!(report, "  {:<5} {:<40} Events", "#", "IP Address")?;
     writeln!(report, "  {}", "-".repeat(55))?;
 
     for (rank, (ip, count)) in top_ips.iter().enumerate() {
@@ -447,6 +447,165 @@ fn write_recommendations(report: &mut String, state: &AppState) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Generate an HTML version of the security report.
+pub fn generate_html_report(state: &AppState) -> Result<String> {
+    let mut html = String::with_capacity(16384);
+
+    let now = Utc::now();
+    let uptime = now.signed_duration_since(state.started_at);
+    let hours = uptime.num_hours();
+    let minutes = uptime.num_minutes() % 60;
+    let seconds = uptime.num_seconds() % 60;
+
+    writeln!(html, "<!DOCTYPE html>")?;
+    writeln!(html, "<html lang=\"en\"><head>")?;
+    writeln!(html, "<meta charset=\"utf-8\">")?;
+    writeln!(
+        html,
+        "<title>Aegis Security Report - {}</title>",
+        now.format("%Y-%m-%d")
+    )?;
+    writeln!(html, "<style>")?;
+    writeln!(
+        html,
+        "body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; \
+         margin: 2em; background: #f8f9fa; color: #212529; }}"
+    )?;
+    writeln!(
+        html,
+        "h1 {{ color: #343a40; border-bottom: 2px solid #dee2e6; padding-bottom: 0.5em; }}"
+    )?;
+    writeln!(html, "h2 {{ color: #495057; margin-top: 1.5em; }}")?;
+    writeln!(
+        html,
+        "table {{ border-collapse: collapse; width: 100%; margin: 1em 0; }}"
+    )?;
+    writeln!(
+        html,
+        "th, td {{ border: 1px solid #dee2e6; padding: 0.5em 0.75em; text-align: left; }}"
+    )?;
+    writeln!(html, "th {{ background: #e9ecef; }}")?;
+    writeln!(
+        html,
+        ".critical {{ color: #fff; background: #dc3545; padding: 2px 6px; border-radius: 3px; }}"
+    )?;
+    writeln!(
+        html,
+        ".high {{ color: #fff; background: #fd7e14; padding: 2px 6px; border-radius: 3px; }}"
+    )?;
+    writeln!(
+        html,
+        ".medium {{ color: #212529; background: #ffc107; padding: 2px 6px; border-radius: 3px; }}"
+    )?;
+    writeln!(
+        html,
+        ".low {{ color: #fff; background: #0d6efd; padding: 2px 6px; border-radius: 3px; }}"
+    )?;
+    writeln!(
+        html,
+        ".info {{ color: #fff; background: #6c757d; padding: 2px 6px; border-radius: 3px; }}"
+    )?;
+    writeln!(
+        html,
+        ".summary {{ background: #fff; padding: 1em; border-radius: 6px; \
+         box-shadow: 0 1px 3px rgba(0,0,0,.1); margin: 1em 0; }}"
+    )?;
+    writeln!(html, "</style>")?;
+    writeln!(html, "</head><body>")?;
+
+    // Header
+    writeln!(html, "<h1>Aegis Security Report</h1>")?;
+    writeln!(html, "<div class=\"summary\">")?;
+    writeln!(
+        html,
+        "<p><strong>Generated:</strong> {}</p>",
+        now.format("%Y-%m-%d %H:%M:%S UTC")
+    )?;
+    writeln!(
+        html,
+        "<p><strong>Session start:</strong> {}</p>",
+        state.started_at.format("%Y-%m-%d %H:%M:%S UTC")
+    )?;
+    writeln!(
+        html,
+        "<p><strong>Duration:</strong> {}h {}m {}s</p>",
+        hours, minutes, seconds
+    )?;
+    writeln!(html, "<p><strong>Posture:</strong> {}</p>", state.posture)?;
+    writeln!(
+        html,
+        "<p><strong>Total threats:</strong> {}</p>",
+        state.threats.len()
+    )?;
+    writeln!(html, "</div>")?;
+
+    // Threats table
+    if !state.threats.is_empty() {
+        writeln!(html, "<h2>Threats</h2>")?;
+        writeln!(html, "<table>")?;
+        writeln!(
+            html,
+            "<tr><th>Time</th><th>Severity</th><th>Type</th><th>Module</th>\
+             <th>Description</th><th>Source IP</th></tr>"
+        )?;
+        for t in &state.threats {
+            let sev_class = format!("{}", t.severity).to_lowercase();
+            writeln!(
+                html,
+                "<tr><td>{}</td><td><span class=\"{}\">{}</span></td><td>{}</td>\
+                 <td>{}</td><td>{}</td><td>{}</td></tr>",
+                t.timestamp.format("%H:%M:%S"),
+                sev_class,
+                t.severity,
+                t.threat_type,
+                t.source_module,
+                t.description,
+                t.source_ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            )?;
+        }
+        writeln!(html, "</table>")?;
+    } else {
+        writeln!(html, "<p>No threats detected. System appears secure.</p>")?;
+    }
+
+    // Blocked IPs
+    if !state.blocked_ips.is_empty() {
+        writeln!(html, "<h2>Blocked IPs</h2>")?;
+        writeln!(html, "<table>")?;
+        writeln!(
+            html,
+            "<tr><th>IP</th><th>Reason</th><th>Blocked At</th><th>Expires</th><th>Type</th></tr>"
+        )?;
+        for entry in state.blocked_ips.values() {
+            let expires = entry
+                .expires_at
+                .map(|t| t.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| "permanent".to_string());
+            writeln!(
+                html,
+                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                entry.ip,
+                entry.reason,
+                entry.blocked_at.format("%Y-%m-%d %H:%M:%S"),
+                expires,
+                if entry.auto { "auto" } else { "manual" },
+            )?;
+        }
+        writeln!(html, "</table>")?;
+    }
+
+    writeln!(
+        html,
+        "<hr><p><em>Generated by Aegis v{}</em></p>",
+        env!("CARGO_PKG_VERSION")
+    )?;
+    writeln!(html, "</body></html>")?;
+
+    Ok(html)
 }
 
 #[cfg(test)]

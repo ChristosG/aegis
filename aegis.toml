@@ -148,6 +148,16 @@ file_added = "alert"
 file_deleted = "alert"
 suspicious_binary = "kill"
 tor_exit = "log"
+honeypot_connection = "block"
+
+[response.geoip]
+enabled = false
+# Path to MaxMind GeoLite2-Country.mmdb (download from maxmind.com, free license key required)
+database_path = "~/.aegis/GeoLite2-Country.mmdb"
+# Block connections from these countries (ISO 3166-1 alpha-2 codes)
+blocked_countries = []
+# If set, ONLY allow connections from these countries (overrides blocked_countries)
+allowed_countries = []
 
 [alerting]
 # Terminal output
@@ -173,3 +183,48 @@ enabled = false
 url = ""
 # Minimum severity to trigger webhook
 min_severity = "high"
+
+[alerting.slack]
+enabled = false
+# Slack incoming webhook URL
+webhook_url = ""
+# Minimum severity to trigger Slack notification
+min_severity = "high"
+
+[alerting.telegram]
+enabled = false
+# Telegram bot token (or set AEGIS_TELEGRAM_BOT_TOKEN env var)
+bot_token = ""
+# Telegram chat ID to send messages to
+chat_id = ""
+# Minimum severity to trigger Telegram notification
+min_severity = "high"
+
+[anomaly]
+enabled = false
+# Normal login hours (24h format) - logins outside this range trigger alerts
+normal_login_hours = [6, 22]
+# Monitor crontab changes
+watch_cron = true
+# Monitor sudoers changes
+watch_sudoers = true
+# Monitor new user account creation
+watch_user_changes = true
+
+[honeypot]
+enabled = false
+# Decoy SSH ports to listen on
+ports = [2222, 2223, 8022]
+# Automatically block IPs that connect to honeypot ports
+auto_block = true
+# How long to hold the connection before closing (seconds)
+linger_seconds = 10
+
+[dashboard]
+enabled = false
+# Bind address (use 127.0.0.1 for local-only access)
+bind = "127.0.0.1"
+# Web dashboard port
+port = 9443
+# Path to API token file (generated on first run)
+token_file = "/etc/aegis/api.token"

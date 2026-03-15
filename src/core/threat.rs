@@ -67,6 +67,11 @@ pub enum ThreatType {
     PathTraversal,
     ThreatIntelMatch,
     TorExit,
+    UnusualLoginTime,
+    CronModified,
+    SudoersModified,
+    NewUserCreated,
+    HoneypotConnection,
 }
 
 impl fmt::Display for ThreatType {
@@ -91,6 +96,11 @@ impl fmt::Display for ThreatType {
             ThreatType::PathTraversal => write!(f, "Path Traversal"),
             ThreatType::ThreatIntelMatch => write!(f, "Threat Intel Match"),
             ThreatType::TorExit => write!(f, "Tor Exit Node"),
+            ThreatType::UnusualLoginTime => write!(f, "Unusual Login Time"),
+            ThreatType::CronModified => write!(f, "Cron Modified"),
+            ThreatType::SudoersModified => write!(f, "Sudoers Modified"),
+            ThreatType::NewUserCreated => write!(f, "New User Created"),
+            ThreatType::HoneypotConnection => write!(f, "Honeypot Connection"),
         }
     }
 }
@@ -118,6 +128,11 @@ impl ThreatType {
             ThreatType::PathTraversal => ThreatSeverity::High,
             ThreatType::ThreatIntelMatch => ThreatSeverity::High,
             ThreatType::TorExit => ThreatSeverity::Info,
+            ThreatType::UnusualLoginTime => ThreatSeverity::Medium,
+            ThreatType::CronModified => ThreatSeverity::High,
+            ThreatType::SudoersModified => ThreatSeverity::High,
+            ThreatType::NewUserCreated => ThreatSeverity::Medium,
+            ThreatType::HoneypotConnection => ThreatSeverity::High,
         }
     }
 
@@ -143,6 +158,11 @@ impl ThreatType {
             "path_traversal" => Some(ThreatType::PathTraversal),
             "threat_intel_match" => Some(ThreatType::ThreatIntelMatch),
             "tor_exit" => Some(ThreatType::TorExit),
+            "unusual_login_time" => Some(ThreatType::UnusualLoginTime),
+            "cron_modified" => Some(ThreatType::CronModified),
+            "sudoers_modified" => Some(ThreatType::SudoersModified),
+            "new_user_created" => Some(ThreatType::NewUserCreated),
+            "honeypot_connection" => Some(ThreatType::HoneypotConnection),
             _ => None,
         }
     }

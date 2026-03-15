@@ -285,41 +285,43 @@ impl ScanModule for WebModule {
             }
 
             // --- SQL Injection Detection ---
-            if self.config.detect_sqli && patterns.is_sqli(&request_lower) {
-                if !sqli_flagged.contains(&entry.ip) {
-                    sqli_flagged.insert(entry.ip.clone());
-                    let description = format!("SQL injection attempt detected from {}", entry.ip);
+            if self.config.detect_sqli
+                && patterns.is_sqli(&request_lower)
+                && !sqli_flagged.contains(&entry.ip)
+            {
+                sqli_flagged.insert(entry.ip.clone());
+                let description = format!("SQL injection attempt detected from {}", entry.ip);
 
-                    let mut event = ThreatEvent::new(ThreatType::SqlInjection, "web", description)
-                        .with_detail("request", entry.request.clone())
-                        .with_detail("user_agent", entry.user_agent.clone())
-                        .with_detail("status", entry.status.to_string());
+                let mut event = ThreatEvent::new(ThreatType::SqlInjection, "web", description)
+                    .with_detail("request", entry.request.clone())
+                    .with_detail("user_agent", entry.user_agent.clone())
+                    .with_detail("status", entry.status.to_string());
 
-                    if let Ok(ip) = entry.ip.parse::<IpAddr>() {
-                        event = event.with_source_ip(ip);
-                    }
-
-                    threats.push(event);
+                if let Ok(ip) = entry.ip.parse::<IpAddr>() {
+                    event = event.with_source_ip(ip);
                 }
+
+                threats.push(event);
             }
 
             // --- Path Traversal Detection ---
-            if self.config.detect_path_traversal && patterns.is_path_traversal(&request_lower) {
-                if !traversal_flagged.contains(&entry.ip) {
-                    traversal_flagged.insert(entry.ip.clone());
-                    let description = format!("Path traversal attempt detected from {}", entry.ip);
+            if self.config.detect_path_traversal
+                && patterns.is_path_traversal(&request_lower)
+                && !traversal_flagged.contains(&entry.ip)
+            {
+                traversal_flagged.insert(entry.ip.clone());
+                let description = format!("Path traversal attempt detected from {}", entry.ip);
 
-                    let mut event = ThreatEvent::new(ThreatType::PathTraversal, "web", description)
-                        .with_detail("request", entry.request.clone())
-                        .with_detail("user_agent", entry.user_agent.clone())
-                        .with_detail("status", entry.status.to_string());
+                let mut event = ThreatEvent::new(ThreatType::PathTraversal, "web", description)
+                    .with_detail("request", entry.request.clone())
+                    .with_detail("user_agent", entry.user_agent.clone())
+                    .with_detail("status", entry.status.to_string());
 
-                    if let Ok(ip) = entry.ip.parse::<IpAddr>() {
-                        event = event.with_source_ip(ip);
-                    }
-
-                    threats.push(event);
+                if let Ok(ip) = entry.ip.parse::<IpAddr>() {
+                    event = event.with_source_ip(ip);
                 }
+
+                threats.push(event);
             }
         }
 

@@ -35,12 +35,12 @@ pub struct Engine {
     event_bus: EventBus,
     /// Configuration snapshot.
     config: AegisConfig,
-    /// Automated response engine.
-    response_engine: ResponseEngine,
-    /// Alerting subsystem (email, webhook, log file).
-    alert_manager: AlertManager,
-    /// Persistence layer for threat logs and dedup state.
-    storage: Storage,
+    /// Automated response engine (Arc for sharing with web dashboard).
+    response_engine: Arc<ResponseEngine>,
+    /// Alerting subsystem (email, webhook, log file) (Arc for sharing).
+    alert_manager: Arc<AlertManager>,
+    /// Persistence layer for threat logs and dedup state (Arc for sharing).
+    storage: Arc<Storage>,
 }
 
 impl Engine {
@@ -84,9 +84,9 @@ impl Engine {
             modules: enabled_modules,
             event_bus,
             config,
-            response_engine,
-            alert_manager,
-            storage,
+            response_engine: Arc::new(response_engine),
+            alert_manager: Arc::new(alert_manager),
+            storage: Arc::new(storage),
         }
     }
 
@@ -104,6 +104,31 @@ impl Engine {
     /// Return a reference to the event bus.
     pub fn event_bus(&self) -> &EventBus {
         &self.event_bus
+    }
+
+    /// Return a clone of the event bus (for web dashboard sharing).
+    pub fn event_bus_clone(&self) -> EventBus {
+        self.event_bus.clone()
+    }
+
+    /// Return the Arc-wrapped config for sharing.
+    pub fn config(&self) -> &AegisConfig {
+        &self.config
+    }
+
+    /// Return the Arc-wrapped response engine for sharing.
+    pub fn response_engine(&self) -> Arc<ResponseEngine> {
+        Arc::clone(&self.response_engine)
+    }
+
+    /// Return the Arc-wrapped alert manager for sharing.
+    pub fn alert_manager(&self) -> Arc<AlertManager> {
+        Arc::clone(&self.alert_manager)
+    }
+
+    /// Return the Arc-wrapped storage for sharing.
+    pub fn storage(&self) -> Arc<Storage> {
+        Arc::clone(&self.storage)
     }
 
     // -----------------------------------------------------------------------

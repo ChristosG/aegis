@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Top-level Aegis configuration, typically loaded from aegis.toml.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AegisConfig {
     pub general: GeneralConfig,
@@ -14,22 +14,9 @@ pub struct AegisConfig {
     pub threat_intel: ThreatIntelConfig,
     pub response: ResponseConfig,
     pub alerting: AlertingConfig,
-}
-
-impl Default for AegisConfig {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            network: NetworkConfig::default(),
-            process: ProcessConfig::default(),
-            file_integrity: FileIntegrityConfig::default(),
-            auth: AuthConfig::default(),
-            web: WebConfig::default(),
-            threat_intel: ThreatIntelConfig::default(),
-            response: ResponseConfig::default(),
-            alerting: AlertingConfig::default(),
-        }
-    }
+    pub anomaly: AnomalyConfig,
+    pub honeypot: HoneypotConfig,
+    pub dashboard: DashboardConfig,
 }
 
 /// General daemon / runtime settings.
@@ -396,6 +383,8 @@ pub struct ResponseConfig {
     pub whitelist: Vec<String>,
     /// Per-threat-type action overrides: threat_key -> action string.
     pub overrides: HashMap<String, String>,
+    /// GeoIP-based blocking settings.
+    pub geoip: GeoipConfig,
 }
 
 impl Default for ResponseConfig {
@@ -432,6 +421,7 @@ impl Default for ResponseConfig {
                 "192.168.0.0/16".into(),
             ],
             overrides,
+            geoip: GeoipConfig::default(),
         }
     }
 }
@@ -448,6 +438,10 @@ pub struct AlertingConfig {
     pub email: EmailConfig,
     /// Webhook notification settings.
     pub webhook: WebhookConfig,
+    /// Slack notification settings.
+    pub slack: SlackConfig,
+    /// Telegram notification settings.
+    pub telegram: TelegramConfig,
 }
 
 impl Default for AlertingConfig {
@@ -457,6 +451,8 @@ impl Default for AlertingConfig {
             log_file: "~/.aegis/threats.jsonl".into(),
             email: EmailConfig::default(),
             webhook: WebhookConfig::default(),
+            slack: SlackConfig::default(),
+            telegram: TelegramConfig::default(),
         }
     }
 }
@@ -520,6 +516,148 @@ impl Default for WebhookConfig {
 
 fn default_true() -> bool {
     true
+}
+
+/// Slack webhook notification settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SlackConfig {
+    pub enabled: bool,
+    pub webhook_url: String,
+    /// Minimum severity to trigger a Slack notification.
+    pub min_severity: String,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
+            min_severity: "high".into(),
+        }
+    }
+}
+
+/// Telegram bot notification settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelegramConfig {
+    pub enabled: bool,
+    /// Bot token (prefer AEGIS_TELEGRAM_BOT_TOKEN env var).
+    pub bot_token: String,
+    pub chat_id: String,
+    /// Minimum severity to trigger a Telegram notification.
+    pub min_severity: String,
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            chat_id: String::new(),
+            min_severity: "high".into(),
+        }
+    }
+}
+
+/// GeoIP-based blocking configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeoipConfig {
+    pub enabled: bool,
+    /// Path to the MaxMind GeoLite2-Country.mmdb file.
+    pub database_path: String,
+    /// ISO country codes to block (e.g. ["CN", "RU"]).
+    pub blocked_countries: Vec<String>,
+    /// ISO country codes to allow (if non-empty, only these are allowed).
+    pub allowed_countries: Vec<String>,
+}
+
+impl Default for GeoipConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_path: "~/.aegis/GeoLite2-Country.mmdb".into(),
+            blocked_countries: Vec::new(),
+            allowed_countries: Vec::new(),
+        }
+    }
+}
+
+/// Log anomaly detection module configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnomalyConfig {
+    pub enabled: bool,
+    /// Hour range considered normal for logins [start, end] in 24h format.
+    pub normal_login_hours: Vec<u32>,
+    /// Watch for cron changes.
+    pub watch_cron: bool,
+    /// Watch for sudoers changes.
+    pub watch_sudoers: bool,
+    /// Watch for new user accounts.
+    pub watch_user_changes: bool,
+}
+
+impl Default for AnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            normal_login_hours: vec![6, 22],
+            watch_cron: true,
+            watch_sudoers: true,
+            watch_user_changes: true,
+        }
+    }
+}
+
+/// SSH honeypot module configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HoneypotConfig {
+    pub enabled: bool,
+    /// TCP ports to listen on as decoy SSH servers.
+    pub ports: Vec<u16>,
+    /// Automatically block IPs that connect to honeypot ports.
+    pub auto_block: bool,
+    /// How long to keep the connection open before closing (seconds).
+    pub linger_seconds: u64,
+}
+
+impl Default for HoneypotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ports: vec![2222, 2223, 8022],
+            auto_block: true,
+            linger_seconds: 10,
+        }
+    }
+}
+
+/// Web dashboard configuration (requires web-dashboard feature).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DashboardConfig {
+    pub enabled: bool,
+    /// Address to bind the web server to.
+    pub bind: String,
+    /// Port for the web server.
+    pub port: u16,
+    /// Path to the API authentication token file.
+    pub token_file: String,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bind: "127.0.0.1".into(),
+            port: 9443,
+            token_file: "/etc/aegis/api.token".into(),
+        }
+    }
 }
 
 #[cfg(test)]

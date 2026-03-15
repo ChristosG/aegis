@@ -167,11 +167,8 @@ impl FileIntegrityModule {
             }
 
             if path.is_file() {
-                match sha256_file(&path) {
-                    Ok(hash) => {
-                        baseline.insert(path, hash);
-                    }
-                    Err(_) => {} // skip unreadable files silently
+                if let Ok(hash) = sha256_file(&path) {
+                    baseline.insert(path, hash);
                 }
             } else if path.is_dir() {
                 self.hash_directory(&path, baseline);
@@ -366,17 +363,14 @@ impl FileIntegrityModule {
                 if let Err(e) = self.walk_directory(&path, baseline, threats) {
                     debug!(path = %path.display(), error = %e, "Error recursing into directory");
                 }
-            } else if file_type.is_file() {
-                if !baseline.contains_key(&path) {
-                    let description =
-                        format!("New file detected (not in baseline): {}", path.display());
-                    let event =
-                        ThreatEvent::new(ThreatType::FileAdded, "file_integrity", &description)
-                            .with_target(path.to_string_lossy().to_string());
+            } else if file_type.is_file() && !baseline.contains_key(&path) {
+                let description =
+                    format!("New file detected (not in baseline): {}", path.display());
+                let event = ThreatEvent::new(ThreatType::FileAdded, "file_integrity", &description)
+                    .with_target(path.to_string_lossy().to_string());
 
-                    debug!(path = %path.display(), "New file not in baseline");
-                    threats.push(event);
-                }
+                debug!(path = %path.display(), "New file not in baseline");
+                threats.push(event);
             }
         }
 

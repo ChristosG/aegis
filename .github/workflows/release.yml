@@ -13,15 +13,33 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.variant }} (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
+          # CLI-only builds
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
+            variant: cli
+            features: ""
+            prefix: "aegis"
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
+            variant: cli
+            features: ""
+            prefix: "aegis"
+          # Full builds (with web dashboard)
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            variant: full
+            features: "--features web-dashboard"
+            prefix: "aegis-full"
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            variant: full
+            features: "--features web-dashboard"
+            prefix: "aegis-full"
 
     steps:
       - uses: actions/checkout@v4
@@ -40,19 +58,23 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.target }}-${{ matrix.variant }}
 
       - name: Build release
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ matrix.features }}
 
       - name: Run tests
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.variant == 'cli'
         run: cargo test --release
+
+      - name: Run tests (web-dashboard)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' && matrix.variant == 'full'
+        run: cargo test --release --features web-dashboard
 
       - name: Package
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          TARBALL="aegis-${TAG}-${{ matrix.target }}.tar.gz"
+          TARBALL="${{ matrix.prefix }}-${TAG}-${{ matrix.target }}.tar.gz"
           tar -czf "$TARBALL" \
             -C target/${{ matrix.target }}/release aegis \
             -C "$GITHUB_WORKSPACE" aegis.service aegis.toml
@@ -62,7 +84,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: aegis-${{ matrix.target }}
+          name: ${{ matrix.prefix }}-${{ matrix.target }}
           path: ${{ env.TARBALL }}
 
   release:

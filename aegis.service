@@ -14,14 +14,14 @@ User=root
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log /root/.aegis
+ReadWritePaths=/var/log /root/.aegis /etc/aegis
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 
 # Allow necessary capabilities
-AmbientCapabilities=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_KILL
+AmbientCapabilities=CAP_NET_ADMIN CAP_DAC_READ_SEARCH CAP_KILL CAP_NET_BIND_SERVICE
 
 # Logging
 StandardOutput=journal

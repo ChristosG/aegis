@@ -308,9 +308,11 @@ pub enum ResponseAction {
     Quarantine,
 }
 
-impl ResponseAction {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl std::str::FromStr for ResponseAction {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "log" => Self::Log,
             "alert" => Self::Alert,
             "block" => Self::Block,
@@ -318,7 +320,7 @@ impl ResponseAction {
             "block+kill" | "block_kill" | "blockandkill" => Self::BlockAndKill,
             "quarantine" => Self::Quarantine,
             _ => Self::Log,
-        }
+        })
     }
 }
 
@@ -354,6 +356,8 @@ pub struct ResponseEngine {
     recent_blocks: std::sync::Mutex<VecDeque<Instant>>,
     /// Data directory for quarantine storage and other persistent data.
     data_dir: PathBuf,
+    /// Optional GeoIP lookup engine.
+    geoip: Option<crate::util::geoip::GeoIpLookup>,
 }
 
 impl ResponseEngine {
@@ -384,6 +388,19 @@ impl ResponseEngine {
                 Duration::from_secs(86400)
             });
 
+        // Initialize GeoIP lookup if configured.
+        let geoip = if config.geoip.enabled {
+            match crate::util::geoip::GeoIpLookup::new(&config.geoip) {
+                Ok(lookup) => Some(lookup),
+                Err(e) => {
+                    warn!(error = %e, "GeoIP initialization failed, GeoIP blocking disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             config,
             whitelist,
@@ -391,6 +408,7 @@ impl ResponseEngine {
             block_duration,
             recent_blocks: std::sync::Mutex::new(VecDeque::new()),
             data_dir,
+            geoip,
         }
     }
 
@@ -400,10 +418,19 @@ impl ResponseEngine {
             return ResponseAction::Log;
         }
 
+        // GeoIP: if an event has a source IP from a blocked country, escalate to Block.
+        if let Some(ref geoip) = self.geoip {
+            if let Some(source_ip) = event.source_ip {
+                if let Some(_country) = geoip.should_block(&source_ip) {
+                    return ResponseAction::Block;
+                }
+            }
+        }
+
         // Check per-threat-type overrides first.
         let threat_key = threat_type_to_config_key(&event.threat_type);
         if let Some(action_str) = self.config.overrides.get(&threat_key) {
-            return ResponseAction::from_str(action_str);
+            return action_str.parse::<ResponseAction>().unwrap();
         }
 
         // Fall back to severity-based defaults.
@@ -496,7 +523,7 @@ impl ResponseEngine {
         {
             let mut recent = self.recent_blocks.lock().unwrap();
             let cutoff = Instant::now() - Duration::from_secs(60);
-            while recent.front().map_or(false, |t| *t < cutoff) {
+            while recent.front().is_some_and(|t| *t < cutoff) {
                 recent.pop_front();
             }
 
@@ -779,5 +806,10 @@ fn threat_type_to_config_key(tt: &ThreatType) -> String {
         ThreatType::PathTraversal => "path_traversal".into(),
         ThreatType::ThreatIntelMatch => "threat_intel_match".into(),
         ThreatType::TorExit => "tor_exit".into(),
+        ThreatType::UnusualLoginTime => "unusual_login_time".into(),
+        ThreatType::CronModified => "cron_modified".into(),
+        ThreatType::SudoersModified => "sudoers_modified".into(),
+        ThreatType::NewUserCreated => "new_user_created".into(),
+        ThreatType::HoneypotConnection => "honeypot_connection".into(),
     }
 }

@@ -7,9 +7,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use aegis::cli::args::{Cli, Commands};
+use aegis::cli::args::{Cli, Commands, WhitelistAction};
 use aegis::cli::{output, report};
 use aegis::config::defaults::{load_or_default, resolve_path};
+use aegis::config::validate;
 use aegis::core::engine::Engine;
 use aegis::core::state::BlockEntry;
 
@@ -90,7 +91,10 @@ async fn main() -> Result<()> {
         Commands::Block { ip, duration } => cmd_block(config, &ip, &duration).await,
         Commands::Unblock { ip } => cmd_unblock(config, &ip).await,
         Commands::Baseline => cmd_baseline(config).await,
-        Commands::Report => cmd_report(config).await,
+        Commands::Report { format, output } => cmd_report(config, &format, output.as_deref()).await,
+        Commands::Check => cmd_check(config),
+        Commands::Whitelist { action } => cmd_whitelist(config, action).await,
+        Commands::Update { check, force } => cmd_update(config, check, force).await,
         Commands::InitMail => cmd_init_mail(config),
         Commands::Init {
             skip_sysctl,
@@ -149,6 +153,7 @@ fn load_mail_env() {
 // ---------------------------------------------------------------------------
 
 /// Run a one-shot security scan.
+#[allow(clippy::too_many_arguments)]
 async fn cmd_scan(
     config: aegis::config::schema::AegisConfig,
     network: bool,
@@ -213,7 +218,7 @@ async fn cmd_watch(config: aegis::config::schema::AegisConfig, foreground: bool)
         );
     }
 
-    let engine = Engine::new(config);
+    let engine = Engine::new(config.clone());
     let cancel = CancellationToken::new();
     let cancel_clone = cancel.clone();
 
@@ -225,6 +230,38 @@ async fn cmd_watch(config: aegis::config::schema::AegisConfig, foreground: bool)
         info!("Received shutdown signal");
         cancel_clone.cancel();
     });
+
+    // Spawn web dashboard if feature is enabled and configured.
+    #[cfg(feature = "web-dashboard")]
+    {
+        if config.dashboard.enabled {
+            let web_cancel = cancel.clone();
+            let state = engine.state();
+            let config_arc = std::sync::Arc::new(config.clone());
+            let response_engine = engine.response_engine();
+            let alert_manager = engine.alert_manager();
+            let storage = engine.storage();
+            let event_bus = engine.event_bus_clone();
+            let dashboard_config = config.dashboard.clone();
+
+            tokio::spawn(async move {
+                if let Err(e) = aegis::web::server::start_server(
+                    dashboard_config,
+                    state,
+                    config_arc,
+                    response_engine,
+                    alert_manager,
+                    storage,
+                    event_bus,
+                    web_cancel,
+                )
+                .await
+                {
+                    tracing::error!(error = %e, "Web dashboard server failed");
+                }
+            });
+        }
+    }
 
     engine.run_daemon(cancel).await?;
     Ok(())
@@ -386,7 +423,11 @@ async fn cmd_baseline(config: aegis::config::schema::AegisConfig) -> Result<()> 
 }
 
 /// Generate a security report.
-async fn cmd_report(config: aegis::config::schema::AegisConfig) -> Result<()> {
+async fn cmd_report(
+    config: aegis::config::schema::AegisConfig,
+    format: &str,
+    output: Option<&str>,
+) -> Result<()> {
     let data_dir = resolve_path(&config.general.data_dir);
     let storage = aegis::storage::Storage::new(&data_dir);
 
@@ -402,9 +443,194 @@ async fn cmd_report(config: aegis::config::schema::AegisConfig) -> Result<()> {
         }
     }
     let state_guard = state.read().await;
-    let report_text = report::generate_report(&state_guard)?;
-    println!("{}", report_text);
+
+    match format {
+        "html" => {
+            let html = aegis::cli::report::generate_html_report(&state_guard)?;
+            if let Some(path) = output {
+                std::fs::write(path, &html)?;
+                println!("  HTML report written to {}", path);
+            } else {
+                println!("{}", html);
+            }
+        }
+        "pdf" => {
+            let path = output.unwrap_or("aegis-report.pdf");
+            aegis::cli::report_pdf::generate_pdf_report(&state_guard, path)?;
+            println!("  PDF report written to {}", path);
+        }
+        _ => {
+            // text format (default)
+            let report_text = report::generate_report(&state_guard)?;
+            if let Some(path) = output {
+                std::fs::write(path, &report_text)?;
+                println!("  Text report written to {}", path);
+            } else {
+                println!("{}", report_text);
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Validate the configuration file.
+fn cmd_check(config: aegis::config::schema::AegisConfig) -> Result<()> {
+    use colored::Colorize;
+
+    println!("\n  Aegis Configuration Validator\n");
+
+    let result = validate::validate_config(&config);
+
+    if result.errors.is_empty() && result.warnings.is_empty() {
+        println!(
+            "  {} Configuration is valid. No issues found.\n",
+            "OK".green().bold()
+        );
+        return Ok(());
+    }
+
+    if !result.errors.is_empty() {
+        println!("  {} ({}):", "ERRORS".red().bold(), result.errors.len());
+        for err in &result.errors {
+            println!("    {} {}", "✗".red(), err);
+        }
+        println!();
+    }
+
+    if !result.warnings.is_empty() {
+        println!(
+            "  {} ({}):",
+            "WARNINGS".yellow().bold(),
+            result.warnings.len()
+        );
+        for warn in &result.warnings {
+            println!("    {} {}", "!".yellow(), warn);
+        }
+        println!();
+    }
+
+    if result.is_ok() {
+        println!(
+            "  {} Configuration is valid ({} warning(s)).\n",
+            "OK".green().bold(),
+            result.warnings.len()
+        );
+    } else {
+        println!(
+            "  {} Configuration has {} error(s). Please fix them before running Aegis.\n",
+            "FAIL".red().bold(),
+            result.errors.len()
+        );
+    }
+
+    Ok(())
+}
+
+/// Manage the response whitelist.
+async fn cmd_whitelist(
+    config: aegis::config::schema::AegisConfig,
+    action: WhitelistAction,
+) -> Result<()> {
+    use colored::Colorize;
+
+    match action {
+        WhitelistAction::List => {
+            println!("\n  Whitelisted CIDR ranges:\n");
+            if config.response.whitelist.is_empty() {
+                println!("    (none)");
+            } else {
+                for (i, cidr) in config.response.whitelist.iter().enumerate() {
+                    println!("    {}. {}", i + 1, cidr);
+                }
+            }
+            println!();
+        }
+        WhitelistAction::Add { cidr } => {
+            // Validate CIDR
+            if cidr.parse::<ipnet::IpNet>().is_err() && cidr.parse::<std::net::IpAddr>().is_err() {
+                anyhow::bail!("Invalid CIDR or IP address: '{}'", cidr);
+            }
+
+            if config.response.whitelist.contains(&cidr) {
+                println!(
+                    "  {} '{}' is already in the whitelist",
+                    "WARN".yellow(),
+                    cidr
+                );
+                return Ok(());
+            }
+
+            // Use toml_edit to preserve comments/formatting
+            let config_path = aegis::config::defaults::find_config_path(None)
+                .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
+            let content = std::fs::read_to_string(&config_path)?;
+            let mut doc = content
+                .parse::<toml_edit::DocumentMut>()
+                .context("Failed to parse config file for editing")?;
+
+            // Ensure [response] and whitelist exist
+            if !doc.contains_key("response") {
+                doc["response"] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+            let response = doc["response"].as_table_mut().unwrap();
+            if !response.contains_key("whitelist") {
+                response["whitelist"] = toml_edit::value(toml_edit::Array::new());
+            }
+            let whitelist = response["whitelist"]
+                .as_array_mut()
+                .ok_or_else(|| anyhow::anyhow!("whitelist is not an array in config"))?;
+            whitelist.push(cidr.as_str());
+
+            std::fs::write(&config_path, doc.to_string())?;
+            println!(
+                "  {} Added '{}' to whitelist in {}",
+                "OK".green(),
+                cidr,
+                config_path.display()
+            );
+        }
+        WhitelistAction::Remove { cidr } => {
+            let config_path = aegis::config::defaults::find_config_path(None)
+                .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
+            let content = std::fs::read_to_string(&config_path)?;
+            let mut doc = content
+                .parse::<toml_edit::DocumentMut>()
+                .context("Failed to parse config file for editing")?;
+
+            if let Some(response) = doc.get_mut("response").and_then(|r| r.as_table_mut()) {
+                if let Some(whitelist) =
+                    response.get_mut("whitelist").and_then(|w| w.as_array_mut())
+                {
+                    let before_len = whitelist.len();
+                    whitelist.retain(|v| v.as_str() != Some(cidr.as_str()));
+                    if whitelist.len() == before_len {
+                        println!("  {} '{}' was not in the whitelist", "WARN".yellow(), cidr);
+                        return Ok(());
+                    }
+                }
+            }
+
+            std::fs::write(&config_path, doc.to_string())?;
+            println!(
+                "  {} Removed '{}' from whitelist in {}",
+                "OK".green(),
+                cidr,
+                config_path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Check for or perform a self-update.
+async fn cmd_update(
+    _config: aegis::config::schema::AegisConfig,
+    check_only: bool,
+    force: bool,
+) -> Result<()> {
+    aegis::update::run_update(check_only, force).await
 }
 
 /// Interactive SMTP mail configuration.

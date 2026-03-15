@@ -1,3 +1,6 @@
+pub mod slack;
+pub mod telegram;
+
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write as IoWrite;
@@ -50,6 +53,18 @@ impl AlertManager {
         if self.config.webhook.enabled {
             if let Err(e) = self.alert_webhook(event).await {
                 error!(error = %e, "Webhook alert failed (non-blocking)");
+            }
+        }
+
+        if self.config.slack.enabled {
+            if let Err(e) = slack::alert_slack(&self.config.slack, event).await {
+                error!(error = %e, "Slack alert failed (non-blocking)");
+            }
+        }
+
+        if self.config.telegram.enabled {
+            if let Err(e) = telegram::alert_telegram(&self.config.telegram, event).await {
+                error!(error = %e, "Telegram alert failed (non-blocking)");
             }
         }
 

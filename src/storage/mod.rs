@@ -259,7 +259,7 @@ impl Storage {
         let now = Utc::now();
         let before = blocks.len();
 
-        blocks.retain(|_ip, entry| entry.expires_at.map_or(true, |exp| now <= exp));
+        blocks.retain(|_ip, entry| entry.expires_at.is_none_or(|exp| now <= exp));
 
         let pruned = before - blocks.len();
         if pruned > 0 {

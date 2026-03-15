@@ -12,7 +12,7 @@ env:
 
 jobs:
   test:
-    name: Test
+    name: Test (CLI)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +23,21 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+
+  test-web:
+    name: Test (Web Dashboard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web-dashboard
+
+      - name: Run tests with web-dashboard feature
+        run: cargo test --verbose --features web-dashboard
 
   lint:
     name: Lint
@@ -39,8 +54,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy
+      - name: Clippy (CLI)
         run: cargo clippy -- -D warnings
+
+      - name: Clippy (Web Dashboard)
+        run: cargo clippy --features web-dashboard -- -D warnings
 
   build:
     name: Build release
@@ -52,8 +70,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
+      - name: Build CLI-only
         run: cargo build --release
 
-      - name: Show binary size
-        run: ls -lh target/release/aegis
+      - name: Build with web dashboard
+        run: cargo build --release --features web-dashboard
+
+      - name: Show binary sizes
+        run: |
+          echo "CLI-only:"
+          ls -lh target/release/aegis

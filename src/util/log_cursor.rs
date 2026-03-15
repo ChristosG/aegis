@@ -52,7 +52,7 @@ impl LogCursors {
                 // Incremental read: only new lines since last scan
                 let mut reader = BufReader::new(file);
                 reader.seek(SeekFrom::Start(saved_offset))?;
-                let lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+                let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
                 debug!(
                     path = %key,
                     new_lines = lines.len(),
@@ -68,7 +68,7 @@ impl LogCursors {
 
         // First scan or rotation: read last N lines, set cursor to EOF
         let reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+        let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
         let start = all_lines.len().saturating_sub(tail_lines);
         debug!(
             path = %key,

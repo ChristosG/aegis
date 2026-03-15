@@ -294,7 +294,7 @@ impl AppState {
         let now = Utc::now();
         let before = self.blocked_ips.len();
         self.blocked_ips
-            .retain(|_, entry| entry.expires_at.map_or(true, |exp| now <= exp));
+            .retain(|_, entry| entry.expires_at.is_none_or(|exp| now <= exp));
         before - self.blocked_ips.len()
     }
 

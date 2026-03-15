@@ -205,7 +205,7 @@ impl ProcessModule {
                     .with_detail("exe", exe_str)
                     .with_detail("cpu_usage", &cpu_str)
                     .with_detail("uid", proc.uid.to_string())
-                    .with_detail("cmdline", &truncate_string(&cmdline_joined, 500));
+                    .with_detail("cmdline", truncate_string(&cmdline_joined, 500));
 
                 debug!(
                     pid = proc.pid,
@@ -338,7 +338,7 @@ impl ProcessModule {
                     .with_detail("pid", proc.pid.to_string())
                     .with_detail("name", &proc.name)
                     .with_detail("matched_pattern", &matched_pattern)
-                    .with_detail("cmdline", &truncate_string(&cmdline_joined, 500))
+                    .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("detection_method", "cmdline_pattern");
 
                 debug!(
@@ -379,7 +379,7 @@ impl ProcessModule {
                         .with_detail("name", &proc.name)
                         .with_detail("remote_addresses", &remotes_str)
                         .with_detail("uid", proc.uid.to_string())
-                        .with_detail("cmdline", &truncate_string(&cmdline_joined, 500))
+                        .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                         .with_detail("detection_method", "socket_fd");
 
                     debug!(
@@ -490,7 +490,7 @@ impl ProcessModule {
                     .with_detail("name", &proc.name)
                     .with_detail("exe", exe_path)
                     .with_detail("uid", proc.uid.to_string())
-                    .with_detail("cmdline", &truncate_string(&cmdline_joined, 500))
+                    .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("reason", &reason);
 
                 debug!(
