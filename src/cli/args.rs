@@ -170,6 +170,18 @@ pub enum Commands {
         force: bool,
     },
 
+    /// Enable or disable file integrity monitoring.
+    ///
+    /// Updates aegis.toml and optionally generates a baseline when enabling.
+    Fi {
+        /// Turn file integrity on.
+        #[arg(long, conflicts_with = "off")]
+        on: bool,
+        /// Turn file integrity off.
+        #[arg(long, conflicts_with = "on")]
+        off: bool,
+    },
+
     /// Full system hardening setup: config, sysctl, firewall, baseline,
     /// fail2ban, and systemd service installation.
     Init {

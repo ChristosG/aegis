@@ -37,7 +37,7 @@ suspicious_dirs = ["/tmp", "/dev/shm", "/var/tmp", "/run/shm"]
 detect_reverse_shells = true
 
 [file_integrity]
-enabled = true
+enabled = false
 # Directories to monitor
 watch_paths = ["/etc", "/usr/bin", "/usr/sbin", "/bin", "/sbin"]
 # Paths to exclude from monitoring

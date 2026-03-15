@@ -94,6 +94,7 @@ async fn main() -> Result<()> {
         Commands::Report { format, output } => cmd_report(config, &format, output.as_deref()).await,
         Commands::Check => cmd_check(config),
         Commands::Whitelist { action } => cmd_whitelist(config, action).await,
+        Commands::Fi { on, off } => cmd_fi(config, on, off).await,
         Commands::Update { check, force } => cmd_update(config, check, force).await,
         Commands::InitMail => cmd_init_mail(config),
         Commands::Init {
@@ -621,6 +622,83 @@ async fn cmd_whitelist(
         }
     }
 
+    Ok(())
+}
+
+/// Enable or disable file integrity monitoring.
+async fn cmd_fi(config: aegis::config::schema::AegisConfig, on: bool, off: bool) -> Result<()> {
+    use colored::Colorize;
+
+    if !on && !off {
+        // Just show current status
+        println!(
+            "\n  File integrity is currently: {}\n",
+            if config.file_integrity.enabled {
+                "enabled".green().bold()
+            } else {
+                "disabled".yellow().bold()
+            }
+        );
+        println!("  Usage: aegis fi --on | --off");
+        return Ok(());
+    }
+
+    let enable = on;
+    let config_path = aegis::config::defaults::find_config_path(None)
+        .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
+    let content = std::fs::read_to_string(&config_path)?;
+    let mut doc = content
+        .parse::<toml_edit::DocumentMut>()
+        .context("Failed to parse config file for editing")?;
+
+    if !doc.contains_key("file_integrity") {
+        doc["file_integrity"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc["file_integrity"]["enabled"] = toml_edit::value(enable);
+    std::fs::write(&config_path, doc.to_string())?;
+
+    if enable {
+        println!(
+            "  {} File integrity enabled in {}",
+            "OK".green(),
+            config_path.display()
+        );
+
+        // Generate baseline if one doesn't exist
+        let baseline_path = resolve_path(&config.file_integrity.baseline_path);
+        if !baseline_path.exists() {
+            println!("  Generating baseline (no existing baseline found)...\n");
+            cmd_baseline(config.clone()).await?;
+        }
+    } else {
+        println!(
+            "  {} File integrity disabled in {}",
+            "OK".green(),
+            config_path.display()
+        );
+    }
+
+    // Check if dashboard is running and try to notify it
+    let token_path = &config.dashboard.token_file;
+    let action = if enable { "on" } else { "off" };
+    if let Ok(token) = std::fs::read_to_string(token_path) {
+        let url = format!(
+            "http://{}:{}/api/file-integrity/toggle?action={}&token={}",
+            config.dashboard.bind,
+            config.dashboard.port,
+            action,
+            token.trim()
+        );
+        // Best-effort: if dashboard is running, notify it
+        if let Ok(resp) = reqwest::Client::new().post(&url).send().await {
+            if resp.status().is_success() {
+                println!("  Dashboard notified of config change.");
+                return Ok(());
+            }
+        }
+    }
+
+    println!("  Restart aegis for changes to take effect: sudo systemctl restart aegis");
     Ok(())
 }
 

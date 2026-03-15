@@ -86,7 +86,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                     <td>{threat_type}</td>
                     <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
                     <td>{ip}</td>
-                    <td>{time}</td>
+                    <td data-ts="{iso}">{time}</td>
                 </tr>"#,
                 sev_lower = sev_lower,
                 threat_type_snake = threat_type_snake,
@@ -96,6 +96,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 full_desc = full_desc,
                 description = truncate(&t.description, 80),
                 ip = ip,
+                iso = t.timestamp.to_rfc3339(),
                 time = t.timestamp.format("%H:%M:%S"),
             )
         })
@@ -194,7 +195,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                     <td>{ip}</td>
                     <td>{module}</td>
                     <td>{responded}</td>
-                    <td>{time}</td>
+                    <td data-ts="{iso}">{time}</td>
                     <td>
                         {block_btn}
                     </td>
@@ -209,6 +210,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                 ip = ip,
                 module = t.source_module,
                 responded = responded,
+                iso = t.timestamp.to_rfc3339(),
                 time = t.timestamp.format("%Y-%m-%d %H:%M:%S"),
                 block_btn = if t.source_ip.is_some() {
                     format!(
@@ -273,7 +275,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
     page_wrapper("Threats", &content, token)
 }
 
-pub fn render_firewall_page(state: &AppState, token: &str) -> String {
+pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> String {
     let block_rows: String = state
         .blocked_ips
         .values()
@@ -281,6 +283,9 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
             let expired = b.expires_at.is_some_and(|exp| exp < chrono::Utc::now());
             let expires_str = b.expires_at.map_or("Never".to_string(), |exp| {
                 exp.format("%Y-%m-%d %H:%M:%S").to_string()
+            });
+            let expires_data_ts = b.expires_at.map_or(String::new(), |exp| {
+                format!(r#" data-ts="{}""#, exp.to_rfc3339())
             });
             let row_class = if expired {
                 r#" class="row-expired""#
@@ -293,15 +298,17 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
                 r#"<tr{row_class}>
                     <td>{ip}</td>
                     <td>{reason}</td>
-                    <td>{blocked_at}</td>
-                    <td>{expires}{expired_tag}</td>
+                    <td data-ts="{blocked_at_iso}">{blocked_at}</td>
+                    <td{expires_data_ts}>{expires}{expired_tag}</td>
                     <td>{auto_str}</td>
                     <td><button class="btn-sm" onclick="fwUnblock('{ip}')">Unblock</button></td>
                 </tr>"#,
                 row_class = row_class,
                 ip = b.ip,
                 reason = html_escape(&b.reason),
+                blocked_at_iso = b.blocked_at.to_rfc3339(),
                 blocked_at = b.blocked_at.format("%Y-%m-%d %H:%M:%S"),
+                expires_data_ts = expires_data_ts,
                 expires = expires_str,
                 expired_tag = expired_tag,
                 auto_str = auto_str,
@@ -354,8 +361,11 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
         </div>
         <div class="section">
             <h3>File Integrity</h3>
-            <p style="color:#8b949e;font-size:13px;margin-bottom:12px">Reset the file integrity baseline to accept all current files as the new normal. The next scan will establish a fresh baseline.</p>
-            <button onclick="resetBaseline()">Reset Baseline</button>
+            <p style="color:#8b949e;font-size:13px;margin-bottom:12px">
+                Status: <strong id="fi-status">{fi_status}</strong>
+            </p>
+            <button id="fi-toggle-btn" onclick="toggleFI()">{fi_btn_label}</button>
+            {fi_baseline_btn}
         </div>
         <div class="section">
             <h3>Add to Whitelist</h3>
@@ -379,6 +389,17 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
         "#,
         block_count = state.blocked_ips.len(),
         block_rows = block_rows,
+        fi_status = if fi_enabled { "Enabled" } else { "Disabled" },
+        fi_btn_label = if fi_enabled {
+            "Disable File Integrity"
+        } else {
+            "Enable File Integrity"
+        },
+        fi_baseline_btn = if fi_enabled {
+            r#"<button onclick="resetBaseline()" style="margin-left:8px">Reset Baseline</button>"#
+        } else {
+            ""
+        },
         wl_count = state.config.response.whitelist.len(),
         wl_rows = wl_rows,
     );

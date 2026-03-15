@@ -84,6 +84,10 @@ pub async fn start_server(
             "/api/baseline/reset",
             post(routes::baseline::api_baseline_reset),
         )
+        .route(
+            "/api/file-integrity/toggle",
+            post(routes::baseline::api_fi_toggle),
+        )
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
         .with_state(ctx);
 

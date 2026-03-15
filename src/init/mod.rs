@@ -71,6 +71,47 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
             "SKIP".blue().bold()
         );
         "skipped".to_string()
+    } else if !config.file_integrity.enabled {
+        // FI is disabled by default — ask the user if they want it
+        println!("\n  {}", "Phase 4: File Integrity Baseline".bold());
+        println!("  {}", "-".repeat(40).dimmed());
+        println!(
+            "    Enable file integrity monitoring? (scans /etc, /usr/bin, etc. for changes) [y/N] "
+        );
+
+        let mut answer = String::new();
+        let enable_fi = if std::io::stdin().read_line(&mut answer).is_ok() {
+            matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+        } else {
+            false
+        };
+
+        if enable_fi {
+            // Update aegis.toml to enable FI
+            if let Some(cfg_path) = crate::config::defaults::find_config_path(None) {
+                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                    if let Ok(mut doc) = content.parse::<toml_edit::DocumentMut>() {
+                        if !doc.contains_key("file_integrity") {
+                            doc["file_integrity"] = toml_edit::Item::Table(toml_edit::Table::new());
+                        }
+                        doc["file_integrity"]["enabled"] = toml_edit::value(true);
+                        let _ = std::fs::write(&cfg_path, doc.to_string());
+                        println!(
+                            "    {} File integrity enabled in {}",
+                            "OK".green().bold(),
+                            cfg_path.display()
+                        );
+                    }
+                }
+            }
+            generate_baseline(config, &data_dir)?
+        } else {
+            println!(
+                "    {} File integrity disabled. Enable later with: aegis fi --on",
+                "SKIP".blue().bold()
+            );
+            "skipped (FI disabled)".to_string()
+        }
     } else {
         generate_baseline(config, &data_dir)?
     };

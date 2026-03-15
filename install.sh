@@ -146,6 +146,9 @@ fi
 echo ""
 info "Aegis v${LATEST} installed successfully! (variant: ${VARIANT})"
 echo ""
+echo "  File integrity: disabled by default"
+echo "  Enable with:    sudo aegis fi --on"
+echo ""
 if [ "$VARIANT" = "full" ]; then
     echo "  Web dashboard: http://127.0.0.1:9443"
     if [ -f "/etc/aegis/api.token" ]; then

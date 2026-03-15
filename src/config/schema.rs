@@ -160,7 +160,7 @@ pub struct FileIntegrityConfig {
 impl Default for FileIntegrityConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             watch_paths: vec![
                 "/etc".into(),
                 "/usr/bin".into(),

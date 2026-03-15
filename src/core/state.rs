@@ -317,9 +317,15 @@ impl AppState {
         counts
     }
 
-    /// Get the highest severity among all current threats.
+    /// Get the highest severity among unresponded threats.
+    /// Responded threats (blocked IPs, killed processes) no longer
+    /// contribute to the security posture.
     pub fn max_severity(&self) -> Option<ThreatSeverity> {
-        self.threats.iter().map(|t| t.severity).max()
+        self.threats
+            .iter()
+            .filter(|t| !t.auto_responded)
+            .map(|t| t.severity)
+            .max()
     }
 
     /// Recalculate the security posture based on the current threat list.
@@ -397,6 +403,13 @@ mod tests {
             "Reverse shell detected",
         ));
         assert_eq!(state.posture, SecurityPosture::Critical);
+
+        // Responding to all threats should lower posture back to Secure
+        for t in &mut state.threats {
+            t.auto_responded = true;
+        }
+        state.recalculate_posture();
+        assert_eq!(state.posture, SecurityPosture::Secure);
     }
 
     #[test]

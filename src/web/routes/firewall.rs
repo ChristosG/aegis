@@ -5,6 +5,7 @@ use crate::web::templates;
 
 pub async fn firewall_page(State(ctx): State<AppContext>) -> Result<Html<String>, StatusCode> {
     let state = ctx.state.read().await;
-    let html = templates::render_firewall_page(&state, &ctx.api_token);
+    let fi_enabled = ctx.config.file_integrity.enabled;
+    let html = templates::render_firewall_page(&state, &ctx.api_token, fi_enabled);
     Ok(Html(html))
 }

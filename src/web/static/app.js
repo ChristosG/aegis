@@ -583,6 +583,37 @@ function resetBaseline() {
     );
 }
 
+// === File Integrity Toggle ===
+function toggleFI() {
+    var statusEl = document.getElementById('fi-status');
+    var currentlyEnabled = statusEl && statusEl.textContent === 'Enabled';
+    var action = currentlyEnabled ? 'off' : 'on';
+    var label = currentlyEnabled ? 'Disable' : 'Enable';
+
+    showConfirm(label + ' File Integrity',
+        label + ' file integrity monitoring? A restart of aegis is required for changes to take effect.',
+        function() {
+            fetch('/api/file-integrity/toggle?action=' + action + '&token=' + API_TOKEN, { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.status === 'ok') {
+                        showResult('File Integrity ' + (data.fi_enabled ? 'Enabled' : 'Disabled'),
+                            data.message, false);
+                        // Update UI
+                        if (statusEl) statusEl.textContent = data.fi_enabled ? 'Enabled' : 'Disabled';
+                        var btn = document.getElementById('fi-toggle-btn');
+                        if (btn) btn.textContent = data.fi_enabled ? 'Disable File Integrity' : 'Enable File Integrity';
+                    } else {
+                        showResult('Toggle Failed', data.message || 'Unknown error', true);
+                    }
+                })
+                .catch(function(err) {
+                    showResult('Toggle Failed', 'Error: ' + err, true);
+                });
+        }
+    );
+}
+
 // === Firewall Page ===
 function fwBlockIp() {
     var ip = document.getElementById('block-ip-input').value.trim();
@@ -837,3 +868,25 @@ function formatTimeFull(ts) {
 function pad2(n) {
     return n < 10 ? '0' + n : '' + n;
 }
+
+// === Localize server-rendered UTC timestamps to user's timezone ===
+function localizeTimestamps() {
+    document.querySelectorAll('[data-ts]').forEach(function(el) {
+        var ts = el.getAttribute('data-ts');
+        if (!ts) return;
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return;
+        // Short format if current text is time-only (HH:MM:SS), full otherwise
+        var cur = el.textContent.trim();
+        if (/^\d{2}:\d{2}:\d{2}$/.test(cur)) {
+            el.textContent = formatTime(ts);
+        } else {
+            // Preserve any suffix like " (expired)"
+            var suffix = '';
+            var match = cur.match(/(\s*\(.*\))$/);
+            if (match) suffix = match[1];
+            el.textContent = formatTimeFull(ts) + suffix;
+        }
+    });
+}
+localizeTimestamps();
