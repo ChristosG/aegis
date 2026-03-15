@@ -23,11 +23,20 @@ pub struct BlockRequest {
 pub async fn api_block(
     State(ctx): State<AppContext>,
     Json(req): Json<BlockRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ip: std::net::IpAddr = req.ip.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let ip: std::net::IpAddr = req.ip.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"status": "error", "message": "Invalid IP address"})),
+        )
+    })?;
     let duration_str = req.duration.as_deref().unwrap_or("24h");
-    let duration = crate::core::scheduler::Scheduler::parse_duration(duration_str)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let duration = crate::core::scheduler::Scheduler::parse_duration(duration_str).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"status": "error", "message": "Invalid duration format"})),
+        )
+    })?;
 
     let expires_at = Some(
         chrono::Utc::now()
@@ -47,6 +56,13 @@ pub async fn api_block(
     // Block via firewall
     if let Err(e) = ctx.response_engine.block_ip_firewall(&ip) {
         tracing::warn!(error = %e, "Firewall block failed");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Firewall block failed: {}", e),
+            })),
+        ));
     }
 
     let mut state = ctx.state.write().await;
@@ -63,11 +79,23 @@ pub async fn api_block(
 pub async fn api_unblock(
     State(ctx): State<AppContext>,
     Json(req): Json<BlockRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ip: std::net::IpAddr = req.ip.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let ip: std::net::IpAddr = req.ip.parse().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"status": "error", "message": "Invalid IP address"})),
+        )
+    })?;
 
     if let Err(e) = ctx.response_engine.unblock_ip_firewall(&ip) {
         tracing::warn!(error = %e, "Firewall unblock failed");
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Firewall unblock failed: {}", e),
+            })),
+        ));
     }
 
     let mut state = ctx.state.write().await;

@@ -29,6 +29,16 @@ fn page_wrapper(title: &str, content: &str, token: &str) -> String {
             {content}
         </div>
     </main>
+    <div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h3 id="modal-title"></h3>
+                <button class="modal-close" onclick="hideModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body"></div>
+            <div class="modal-footer" id="modal-footer"></div>
+        </div>
+    </div>
     <script>const API_TOKEN = "{token}";</script>
     <script>{APP_JS}</script>
 </body>
@@ -60,7 +70,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         .threats
         .iter()
         .rev()
-        .take(10)
+        .take(30)
         .map(|t| {
             let sev_class = severity_class(t.severity);
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
@@ -85,36 +95,37 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
     let content = format!(
         r#"
         <div class="cards">
-            <div class="card {posture_class}">
+            <div class="card {posture_class}" id="card-posture">
                 <div class="card-label">Security Posture</div>
-                <div class="card-value">{posture}</div>
+                <div class="card-value" data-stat="posture">{posture}</div>
             </div>
             <div class="card">
                 <div class="card-label">Total Threats</div>
-                <div class="card-value">{total}</div>
+                <div class="card-value" data-stat="total-threats">{total}</div>
             </div>
             <div class="card">
                 <div class="card-label">Blocked IPs</div>
-                <div class="card-value">{blocked}</div>
+                <div class="card-value" data-stat="blocked-ips">{blocked}</div>
             </div>
             <div class="card">
                 <div class="card-label">Scans Run</div>
-                <div class="card-value">{scans}</div>
+                <div class="card-value" data-stat="scans-run">{scans}</div>
             </div>
         </div>
         <div class="severity-breakdown">
             <h3>Severity Breakdown</h3>
             <div class="severity-bars">
-                <div class="sev-row"><span class="sev-label critical">Critical</span><span class="sev-count">{critical}</span></div>
-                <div class="sev-row"><span class="sev-label high">High</span><span class="sev-count">{high}</span></div>
-                <div class="sev-row"><span class="sev-label medium">Medium</span><span class="sev-count">{medium}</span></div>
-                <div class="sev-row"><span class="sev-label low">Low</span><span class="sev-count">{low}</span></div>
-                <div class="sev-row"><span class="sev-label info">Info</span><span class="sev-count">{info_count}</span></div>
+                <div class="sev-row"><span class="sev-label critical">Critical</span><span class="sev-count" data-sev="critical">{critical}</span></div>
+                <div class="sev-row"><span class="sev-label high">High</span><span class="sev-count" data-sev="high">{high}</span></div>
+                <div class="sev-row"><span class="sev-label medium">Medium</span><span class="sev-count" data-sev="medium">{medium}</span></div>
+                <div class="sev-row"><span class="sev-label low">Low</span><span class="sev-count" data-sev="low">{low}</span></div>
+                <div class="sev-row"><span class="sev-label info">Info</span><span class="sev-count" data-sev="info">{info_count}</span></div>
             </div>
         </div>
         <div class="actions">
             <h3>Quick Actions</h3>
             <button onclick="triggerScan()">Run Scan</button>
+            <button onclick="triggerAutoRespond()">Auto-Respond</button>
             <button onclick="exportReport()">Export Report</button>
         </div>
         <div class="section">
@@ -124,7 +135,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                 <thead>
                     <tr><th>Severity</th><th>Type</th><th>Description</th><th>Source IP</th><th>Time</th></tr>
                 </thead>
-                <tbody>{recent_threats}</tbody>
+                <tbody id="recent-threats-body">{recent_threats}</tbody>
             </table>
         </div>
         "#,

@@ -5,3 +5,4 @@
 mail.env
 *.jsonl
 baseline.json
+gitall.sh

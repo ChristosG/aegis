@@ -38,3 +38,56 @@ pub async fn api_scan(
         "threats": all_threats,
     })))
 }
+
+/// Trigger auto-response for current unresponded threats.
+pub async fn api_respond(
+    State(ctx): State<AppContext>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let mut results = Vec::new();
+
+    // Collect unresponded threats
+    let threats: Vec<_> = {
+        let state = ctx.state.read().await;
+        state
+            .threats
+            .iter()
+            .filter(|t| !t.auto_responded)
+            .cloned()
+            .collect()
+    };
+
+    for threat in &threats {
+        let action = ctx.response_engine.determine_action(threat);
+        let mut state = ctx.state.write().await;
+        match ctx.response_engine.respond(threat, &mut state).await {
+            Ok(msg) => {
+                results.push(serde_json::json!({
+                    "threat_id": threat.id,
+                    "action": action.to_string(),
+                    "result": msg,
+                }));
+            }
+            Err(e) => {
+                results.push(serde_json::json!({
+                    "threat_id": threat.id,
+                    "action": action.to_string(),
+                    "error": e.to_string(),
+                }));
+            }
+        }
+    }
+
+    // Persist updated block list
+    {
+        let state = ctx.state.read().await;
+        if let Err(e) = ctx.storage.save_block_list(&state.blocked_ips) {
+            tracing::warn!(error = %e, "Failed to persist block list after auto-respond");
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "responded": results.len(),
+        "results": results,
+    })))
+}

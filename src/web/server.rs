@@ -74,6 +74,8 @@ pub async fn start_server(
         )
         .route("/api/config", get(routes::config::api_config))
         .route("/api/scan", post(routes::scan::api_scan))
+        .route("/api/respond", post(routes::scan::api_respond))
+        .route("/api/stats", get(routes::dashboard::api_stats))
         .route("/api/report", get(routes::report::api_report))
         .route("/report.pdf", get(routes::report::download_pdf))
         .route("/ws/threats", get(routes::ws::ws_threats))
