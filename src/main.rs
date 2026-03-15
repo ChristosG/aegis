@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
             skip_service,
             skip_firewall_cleanup,
             skip_fail2ban,
+            skip_dashboard,
         } => cmd_init(
             config,
             skip_sysctl,
@@ -110,6 +111,7 @@ async fn main() -> Result<()> {
             skip_service,
             skip_firewall_cleanup,
             skip_fail2ban,
+            skip_dashboard,
         ),
     }
 }
@@ -724,6 +726,7 @@ fn cmd_init(
     skip_service: bool,
     skip_firewall_cleanup: bool,
     skip_fail2ban: bool,
+    skip_dashboard: bool,
 ) -> Result<()> {
     let flags = aegis::init::InitFlags {
         skip_sysctl,
@@ -731,6 +734,7 @@ fn cmd_init(
         skip_service,
         skip_firewall_cleanup,
         skip_fail2ban,
+        skip_dashboard,
     };
     aegis::init::run_init(&config, &flags)
 }

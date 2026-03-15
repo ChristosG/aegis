@@ -41,9 +41,9 @@ echo "deb [signed-by=/etc/apt/keyrings/aegis.gpg] https://christosg.github.io/ae
 sudo apt update && sudo apt install aegis-full
 ```
 
-**Uninstall** — cleanly removes everything (prompts before deleting config & data):
+**Uninstall** — cleanly removes everything:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
 ---
@@ -258,16 +258,16 @@ sudo systemctl enable aegis
 Completely remove aegis and all its artifacts:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash
-```
-
-Or skip confirmation prompts:
-
-```bash
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
 ```
 
-This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sysctl hardening, and fail2ban integration. You'll be prompted before deleting config (`/etc/aegis/`) and data (`~/.aegis/`) directories.
+Or run locally if you want interactive prompts before deleting config & data:
+
+```bash
+sudo bash uninstall.sh
+```
+
+This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sysctl hardening, and fail2ban integration.
 
 ### Requirements
 

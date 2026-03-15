@@ -124,7 +124,7 @@ var THREAT_EXPLANATIONS = {
     'connection_rate_exceeded': 'An IP exceeded the configured connection rate limit. May indicate scanning, brute-force, or DDoS activity.',
     'cert_expiring_soon': 'A monitored TLS certificate is approaching its expiry date and needs renewal.',
     'kernel_module_loaded': 'A kernel module was loaded. Rootkits often use kernel modules to hide their presence.',
-    'new_outbound_destination': 'Your server connected to an IP/port it hasn\'t contacted before. Could be normal (new dependency) or malware reaching out. Not from your browser — this is server-level network activity.'
+    'new_outbound_destination': 'A process on this machine connected to an IP/port it hasn\'t contacted before. Check the process name in the details — common programs like browsers or package managers are usually harmless. Unknown processes reaching out could indicate malware.'
 };
 
 // === Sort & Filter State ===

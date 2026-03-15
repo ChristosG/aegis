@@ -21,6 +21,7 @@ struct TcpConnection {
     remote_ip: IpAddr,
     remote_port: u16,
     state: u8,
+    inode: u64,
 }
 
 /// Network scanning module: detects SYN floods, port scans, suspicious outbound
@@ -60,6 +61,13 @@ impl NetworkModule {
                     continue;
                 }
 
+                // Parse inode from field 9 (0-indexed) before the structured parse
+                let inode = line
+                    .split_whitespace()
+                    .nth(9)
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+
                 match parse_tcp_line(line) {
                     Ok((local_ip, local_port, remote_ip, remote_port, state)) => {
                         connections.push(TcpConnection {
@@ -68,6 +76,7 @@ impl NetworkModule {
                             remote_ip,
                             remote_port,
                             state,
+                            inode,
                         });
                     }
                     Err(e) => {
@@ -340,6 +349,42 @@ impl NetworkModule {
         threats
     }
 
+    /// Build a map from socket inode → process name by scanning /proc/<pid>/fd/.
+    fn build_inode_to_process_map(&self) -> HashMap<u64, String> {
+        let mut map = HashMap::new();
+        let pids = crate::util::proc_parse::list_pids();
+        for pid in pids {
+            let fd_dir = format!("/proc/{}/fd", pid);
+            let entries = match std::fs::read_dir(&fd_dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let mut has_socket = false;
+            for entry in entries.flatten() {
+                if let Ok(target) = std::fs::read_link(entry.path()) {
+                    let target_str = target.to_string_lossy();
+                    if let Some(inode_str) = target_str
+                        .strip_prefix("socket:[")
+                        .and_then(|s| s.strip_suffix(']'))
+                    {
+                        if let Ok(inode) = inode_str.parse::<u64>() {
+                            if !has_socket {
+                                has_socket = true;
+                            }
+                            map.entry(inode).or_insert_with(|| {
+                                std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string()
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        map
+    }
+
     /// D4: Detect new outbound destinations not seen in baseline.
     fn detect_new_outbound_destinations(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
@@ -347,9 +392,10 @@ impl NetworkModule {
         let data_dir = crate::config::defaults::resolve_path("~/.aegis");
         let baseline_path = data_dir.join("outbound_baseline.json");
 
-        // Collect current outbound destinations
+        // Collect current outbound destinations and map dest → inode for process lookup
         let mut current_destinations: std::collections::HashSet<(String, u16)> =
             std::collections::HashSet::new();
+        let mut dest_to_inode: HashMap<(String, u16), u64> = HashMap::new();
         for conn in connections {
             if conn.state != tcp_state::ESTABLISHED {
                 continue;
@@ -360,7 +406,11 @@ impl NetworkModule {
             if conn.local_port < 1024 {
                 continue; // Not outbound
             }
-            current_destinations.insert((conn.remote_ip.to_string(), conn.remote_port));
+            let key = (conn.remote_ip.to_string(), conn.remote_port);
+            current_destinations.insert(key.clone());
+            if conn.inode != 0 {
+                dest_to_inode.entry(key).or_insert(conn.inode);
+            }
         }
 
         // Load baseline
@@ -374,25 +424,52 @@ impl NetworkModule {
         };
 
         if !baseline.is_empty() {
-            for (dest_ip, dest_port) in &current_destinations {
-                if !baseline.contains(&(dest_ip.clone(), *dest_port)) {
-                    let description = format!(
-                        "New outbound destination detected: {}:{}",
-                        dest_ip, dest_port
-                    );
-                    let event = ThreatEvent::new(
-                        ThreatType::NewOutboundDestination,
-                        "network",
-                        &description,
-                    )
-                    .with_target(format!("{}:{}", dest_ip, dest_port))
-                    .with_detail("dest_port", dest_port.to_string());
+            // Only build the process map if we have new destinations to report
+            let new_dests: Vec<_> = current_destinations
+                .iter()
+                .filter(|d| !baseline.contains(*d))
+                .collect();
 
-                    if let Ok(ip) = dest_ip.parse() {
-                        threats.push(event.with_source_ip(ip));
-                    } else {
-                        threats.push(event);
-                    }
+            let inode_map = if !new_dests.is_empty() {
+                self.build_inode_to_process_map()
+            } else {
+                HashMap::new()
+            };
+
+            for (dest_ip, dest_port) in &new_dests {
+                // Resolve process name from inode
+                let process_name = dest_to_inode
+                    .get(&(dest_ip.clone(), *dest_port))
+                    .and_then(|inode| inode_map.get(inode))
+                    .cloned();
+
+                let description = match &process_name {
+                    Some(name) => format!(
+                        "New outbound connection to {}:{} by process '{}'",
+                        dest_ip, dest_port, name
+                    ),
+                    None => format!(
+                        "New outbound connection to {}:{}",
+                        dest_ip, dest_port
+                    ),
+                };
+
+                let mut event = ThreatEvent::new(
+                    ThreatType::NewOutboundDestination,
+                    "network",
+                    &description,
+                )
+                .with_target(format!("{}:{}", dest_ip, dest_port))
+                .with_detail("dest_port", dest_port.to_string());
+
+                if let Some(name) = &process_name {
+                    event = event.with_detail("process", name.clone());
+                }
+
+                if let Ok(ip) = dest_ip.parse() {
+                    threats.push(event.with_source_ip(ip));
+                } else {
+                    threats.push(event);
                 }
             }
         }

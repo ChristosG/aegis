@@ -204,6 +204,10 @@ pub enum Commands {
         /// Skip fail2ban jail installation.
         #[arg(long)]
         skip_fail2ban: bool,
+
+        /// Skip web dashboard setup prompt.
+        #[arg(long)]
+        skip_dashboard: bool,
     },
 }
 

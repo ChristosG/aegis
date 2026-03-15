@@ -22,6 +22,7 @@ pub struct InitFlags {
     pub skip_service: bool,
     pub skip_firewall_cleanup: bool,
     pub skip_fail2ban: bool,
+    pub skip_dashboard: bool,
 }
 
 /// Summary of what each phase did, for the final report.
@@ -33,6 +34,7 @@ struct InitSummary {
     firewall: String,
     fail2ban: String,
     service: String,
+    dashboard: String,
 }
 
 /// Run the full aegis init sequence.
@@ -155,6 +157,114 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         service::install_service()?
     };
 
+    // Phase 8: Dashboard setup
+    let dashboard_status = if flags.skip_dashboard {
+        println!(
+            "\n  {} Phase 8: Web Dashboard (--skip-dashboard)",
+            "SKIP".blue().bold()
+        );
+        "skipped".to_string()
+    } else if config.dashboard.enabled {
+        println!("\n  {}", "Phase 8: Web Dashboard".bold());
+        println!("  {}", "-".repeat(40).dimmed());
+        println!(
+            "    {} Already enabled in config",
+            "OK".green().bold()
+        );
+        "already enabled".to_string()
+    } else {
+        println!("\n  {}", "Phase 8: Web Dashboard".bold());
+        println!("  {}", "-".repeat(40).dimmed());
+        println!(
+            "    Enable the web dashboard? (accessible at https://127.0.0.1:9443) [y/N] "
+        );
+
+        let mut answer = String::new();
+        let enable_dashboard = if std::io::stdin().read_line(&mut answer).is_ok() {
+            matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+        } else {
+            false
+        };
+
+        if enable_dashboard {
+            // Update aegis.toml to enable dashboard
+            if let Some(cfg_path) = crate::config::defaults::find_config_path(None) {
+                if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                    if let Ok(mut doc) = content.parse::<toml_edit::DocumentMut>() {
+                        if !doc.contains_key("dashboard") {
+                            doc["dashboard"] = toml_edit::Item::Table(toml_edit::Table::new());
+                        }
+                        doc["dashboard"]["enabled"] = toml_edit::value(true);
+                        let _ = std::fs::write(&cfg_path, doc.to_string());
+                        println!(
+                            "    {} Dashboard enabled in {}",
+                            "OK".green().bold(),
+                            cfg_path.display()
+                        );
+                    }
+                }
+            }
+
+            // Generate API token now so the user can see it
+            let token_file = &config.dashboard.token_file;
+            let token_path = std::path::Path::new(token_file);
+            let token = if token_path.exists() {
+                std::fs::read_to_string(token_path)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string()
+            } else {
+                // Generate a new token
+                let mut bytes = [0u8; 32];
+                use rand::RngCore;
+                rand::thread_rng().fill_bytes(&mut bytes);
+                let token = hex::encode(bytes);
+                if let Some(parent) = token_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(token_path, &token);
+                // Set file permissions to 0600
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        token_path,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
+                }
+                println!(
+                    "    {} Generated API token at {}",
+                    "OK".green().bold(),
+                    token_file
+                );
+                token
+            };
+
+            println!();
+            println!(
+                "    {}",
+                "Dashboard will be available after starting the service:".dimmed()
+            );
+            println!(
+                "      URL:   https://127.0.0.1:{}",
+                config.dashboard.port
+            );
+            println!("      Token: {}", token);
+            println!(
+                "    {}",
+                "(token also stored in /etc/aegis/api.token)".dimmed()
+            );
+
+            format!("enabled on port {}", config.dashboard.port)
+        } else {
+            println!(
+                "    {} Dashboard disabled. Enable later in /etc/aegis/aegis.toml",
+                "SKIP".blue().bold()
+            );
+            "skipped (disabled)".to_string()
+        }
+    };
+
     // Summary
     let summary = InitSummary {
         config_path,
@@ -164,6 +274,7 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         firewall: firewall_status,
         fail2ban: fail2ban_status,
         service: service_status,
+        dashboard: dashboard_status,
     };
 
     print_summary(&summary);
@@ -368,6 +479,7 @@ fn print_summary(summary: &InitSummary) {
     println!("    Firewall     : {}", summary.firewall);
     println!("    fail2ban     : {}", summary.fail2ban);
     println!("    Service      : {}", summary.service);
+    println!("    Dashboard    : {}", summary.dashboard);
     println!();
     println!("    Next steps:");
     println!("      1. Review /etc/aegis/aegis.toml");
