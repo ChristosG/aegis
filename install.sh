@@ -108,30 +108,50 @@ if [ "$VARIANT" = "full" ]; then
     fi
 fi
 
+# --- Run init if not already done ---
+DATA_DIR="${HOME}/.aegis"
+if [ -n "${SUDO_USER:-}" ]; then
+    DATA_DIR="$(eval echo "~${SUDO_USER}")/.aegis"
+fi
+# Also check root's data dir since aegis runs as root
+ROOT_DATA_DIR="/root/.aegis"
+
+if [ ! -f "${DATA_DIR}/baseline.json" ] && [ ! -f "${ROOT_DATA_DIR}/baseline.json" ]; then
+    info "First install detected — running system hardening (aegis init)..."
+    "${INSTALL_DIR}/aegis" init && info "System hardening complete" || warn "aegis init had warnings (check output above)"
+else
+    info "System already initialised (baseline found), skipping init"
+fi
+
 # --- Reload systemd and restart service ---
 if command -v systemctl &>/dev/null; then
     systemctl daemon-reload 2>/dev/null && info "Systemd units reloaded"
+    systemctl enable aegis 2>/dev/null
     if systemctl is-active --quiet aegis 2>/dev/null; then
         systemctl restart aegis
         info "Aegis service restarted"
-    elif systemctl is-enabled --quiet aegis 2>/dev/null; then
+    else
         systemctl start aegis
         info "Aegis service started"
     fi
+fi
+
+# --- Show token for dashboard ---
+if [ "$VARIANT" = "full" ]; then
+    # Wait a moment for the service to generate the token on first start
+    sleep 1
 fi
 
 # --- Done ---
 echo ""
 info "Aegis v${LATEST} installed successfully! (variant: ${VARIANT})"
 echo ""
-echo "  Next steps:"
-if ! systemctl is-active --quiet aegis 2>/dev/null; then
-    echo "    1. sudo aegis init            # system hardening setup"
-    echo "    2. sudo systemctl enable --now aegis"
-fi
 if [ "$VARIANT" = "full" ]; then
-    echo ""
     echo "  Web dashboard: http://127.0.0.1:9443"
-    echo "  Token: sudo cat /etc/aegis/api.token"
+    if [ -f "/etc/aegis/api.token" ]; then
+        echo "  Token: $(cat /etc/aegis/api.token)"
+    else
+        echo "  Token: sudo cat /etc/aegis/api.token"
+    fi
+    echo ""
 fi
-echo ""
