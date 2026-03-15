@@ -34,6 +34,11 @@ curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | s
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/install.sh | sudo bash -s -- --full
 ```
 
+**Uninstall** — cleanly removes everything (prompts before deleting config & data):
+```bash
+curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash
+```
+
 ---
 
 ## Why Aegis?
