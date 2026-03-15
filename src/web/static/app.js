@@ -1330,3 +1330,579 @@ function toggleConfigSection(el) {
     var section = el.closest('.config-section');
     if (section) section.classList.toggle('open');
 }
+
+// === Editable Config Page ===
+
+var CONFIG_SCHEMA = {
+    general: { modules: 'string_array', log_level: 'string', data_dir: 'string', dedup_ttl: 'string' },
+    network: { enabled: 'bool', syn_flood_threshold: 'number', port_scan_threshold: 'number',
+               port_scan_window: 'number', known_outbound_ports: 'number_array',
+               c2_beacon_threshold: 'number', c2_beacon_window: 'number', connection_rate_threshold: 'number' },
+    process: { enabled: 'bool', miner_cpu_threshold: 'number', miner_names: 'string_array',
+               suspicious_dirs: 'string_array', detect_reverse_shells: 'bool' },
+    file_integrity: { enabled: 'module_toggle', watch_paths: 'string_array', exclude_paths: 'string_array',
+                      baseline_path: 'string', use_inotify: 'bool' },
+    auth: { enabled: 'bool', brute_force_threshold: 'number', brute_force_window: 'number',
+            alert_root_login: 'bool', alert_new_ip: 'bool', log_paths: 'string_array' },
+    web: { enabled: 'bool', access_log_paths: 'string_array', ddos_threshold: 'number',
+           detect_sqli: 'bool', detect_path_traversal: 'bool', detect_scanners: 'bool',
+           scanner_agents: 'string_array' },
+    threat_intel: 'skip',
+    response: { enabled: 'bool', dry_run: 'bool', max_blocks_per_minute: 'number',
+                default_block_duration: 'string', max_firewall_rules: 'number',
+                firewall_backend: 'string', whitelist: 'skip' },
+    'response.geoip': { enabled: 'bool', database_path: 'string', maxmind_license_key: 'secret',
+                        blocked_countries: 'string_array', allowed_countries: 'string_array' },
+    alerting: { terminal: 'bool', log_file: 'string' },
+    'alerting.email': { enabled: 'bool', smtp_host: 'string', smtp_port: 'number',
+                        smtp_username: 'string', smtp_password: 'secret', use_tls: 'bool',
+                        from: 'string', to: 'string_array', subject_prefix: 'string',
+                        min_severity: 'string', cooldown: 'string' },
+    'alerting.slack': { enabled: 'bool', webhook_url: 'secret', min_severity: 'string' },
+    'alerting.telegram': { enabled: 'bool', bot_token: 'secret', chat_id: 'string', min_severity: 'string' },
+    'alerting.webhook': { enabled: 'bool', url: 'secret', min_severity: 'string' },
+    anomaly: { enabled: 'module_toggle', normal_login_hours: 'number_array', watch_cron: 'bool',
+               watch_sudoers: 'bool', watch_user_changes: 'bool' },
+    honeypot: { enabled: 'module_toggle', ports: 'number_array', auto_block: 'bool', linger_seconds: 'number' },
+    cert: { enabled: 'module_toggle', domains: 'string_array', warn_days: 'number' }
+};
+
+function flattenConfig(configJson) {
+    var flat = {};
+    for (var key in configJson) {
+        if (key === 'dashboard') continue;
+        var val = configJson[key];
+        if (typeof val === 'object' && val !== null && !Array.isArray(val)) {
+            flat[key] = {};
+            for (var subkey in val) {
+                var subval = val[subkey];
+                if (typeof subval === 'object' && subval !== null && !Array.isArray(subval)) {
+                    flat[key + '.' + subkey] = subval;
+                } else {
+                    flat[key][subkey] = subval;
+                }
+            }
+        } else {
+            flat[key] = val;
+        }
+    }
+    return flat;
+}
+
+function titleCase(s) {
+    return s.replace(/[._]/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+function renderConfigPage() {
+    var container = document.getElementById('config-sections');
+    if (!container) return;
+
+    container.textContent = 'Loading configuration...';
+
+    fetch('/api/config?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(configJson) {
+            container.textContent = '';
+            var flat = flattenConfig(configJson);
+
+            Object.keys(CONFIG_SCHEMA).forEach(function(sectionKey) {
+                var schema = CONFIG_SCHEMA[sectionKey];
+                var data = flat[sectionKey] || {};
+                var section = (schema === 'skip')
+                    ? renderReadOnlySection(sectionKey, data)
+                    : renderEditableSection(sectionKey, schema, data);
+                container.appendChild(section);
+            });
+        })
+        .catch(function(err) {
+            container.textContent = 'Failed to load config: ' + err;
+        });
+}
+
+function makeSectionHeader(title) {
+    var header = document.createElement('div');
+    header.className = 'config-section-header';
+    var titleSpan = document.createElement('span');
+    titleSpan.textContent = title;
+    header.appendChild(titleSpan);
+    var arrow = document.createElement('span');
+    arrow.style.color = 'var(--text-muted)';
+    arrow.textContent = '\u25BE';
+    header.appendChild(arrow);
+    return header;
+}
+
+function renderReadOnlySection(sectionKey, data) {
+    var section = document.createElement('div');
+    section.className = 'config-section';
+
+    var header = makeSectionHeader(titleCase(sectionKey));
+    header.onclick = function() { section.classList.toggle('open'); };
+    section.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'config-section-body';
+
+    if (typeof data === 'object' && data !== null) {
+        for (var key in data) {
+            var row = document.createElement('div');
+            row.className = 'config-row';
+            var keySpan = document.createElement('span');
+            keySpan.className = 'config-key';
+            keySpan.textContent = key;
+            row.appendChild(keySpan);
+            var valSpan = document.createElement('span');
+            valSpan.className = 'config-value';
+            var val = data[key];
+            valSpan.textContent = typeof val === 'object' ? JSON.stringify(val) : String(val);
+            row.appendChild(valSpan);
+            body.appendChild(row);
+        }
+    }
+
+    var note = document.createElement('p');
+    note.style.cssText = 'color:var(--text-muted);font-size:12px;margin-top:8px';
+    note.textContent = 'This section is read-only in the web UI. Edit the TOML file directly.';
+    body.appendChild(note);
+
+    section.appendChild(body);
+    return section;
+}
+
+function renderEditableSection(sectionKey, schema, data) {
+    var section = document.createElement('div');
+    section.className = 'config-section';
+    section.id = 'config-section-' + sectionKey.replace('.', '-');
+
+    var header = makeSectionHeader(titleCase(sectionKey));
+    header.onclick = function() { section.classList.toggle('open'); };
+    section.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'config-section-body';
+
+    var feedback = document.createElement('div');
+    feedback.className = 'config-feedback';
+    feedback.id = 'feedback-' + sectionKey.replace('.', '-');
+    body.appendChild(feedback);
+
+    Object.keys(schema).forEach(function(key) {
+        var fieldType = schema[key];
+        var value = data[key];
+
+        if (fieldType === 'skip') {
+            var row = document.createElement('div');
+            row.className = 'config-edit-row';
+            var lbl = document.createElement('label');
+            lbl.className = 'config-edit-label';
+            lbl.textContent = key;
+            row.appendChild(lbl);
+            var valSpan = document.createElement('span');
+            valSpan.className = 'config-value';
+            valSpan.style.fontSize = '13px';
+            valSpan.textContent = value != null ? (Array.isArray(value) ? value.join(', ') : String(value)) : '';
+            row.appendChild(valSpan);
+            body.appendChild(row);
+            return;
+        }
+
+        var row = document.createElement('div');
+        row.className = 'config-edit-row';
+
+        var label = document.createElement('label');
+        label.className = 'config-edit-label';
+        label.textContent = key.replace(/_/g, ' ');
+        row.appendChild(label);
+
+        var inputWrap = document.createElement('div');
+        inputWrap.className = 'config-edit-input';
+
+        if (fieldType === 'bool' || fieldType === 'module_toggle') {
+            inputWrap.appendChild(createToggle(sectionKey, key, fieldType, !!value));
+        } else if (fieldType === 'number') {
+            var input = document.createElement('input');
+            input.type = 'number';
+            input.className = 'cfg-input';
+            input.id = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
+            input.value = value != null ? value : '';
+            inputWrap.appendChild(input);
+        } else if (fieldType === 'string') {
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'cfg-input';
+            input.id = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
+            input.value = value != null ? value : '';
+            inputWrap.appendChild(input);
+        } else if (fieldType === 'secret') {
+            var input = document.createElement('input');
+            input.type = 'password';
+            input.className = 'cfg-input';
+            input.id = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
+            input.placeholder = 'unchanged';
+            input.value = value != null ? value : '';
+            inputWrap.appendChild(input);
+        } else if (fieldType === 'string_array' || fieldType === 'number_array') {
+            inputWrap.appendChild(createTagInput(sectionKey, key, fieldType, Array.isArray(value) ? value : []));
+        }
+
+        row.appendChild(inputWrap);
+        body.appendChild(row);
+    });
+
+    // Discovery buttons
+    if (sectionKey === 'honeypot') {
+        var discBtn = document.createElement('button');
+        discBtn.className = 'btn-discover';
+        discBtn.textContent = 'Discover Ports';
+        discBtn.onclick = function() { discoverPorts(); };
+        body.appendChild(discBtn);
+    }
+    if (sectionKey === 'cert') {
+        var discBtn = document.createElement('button');
+        discBtn.className = 'btn-discover';
+        discBtn.textContent = 'Discover Domains';
+        discBtn.onclick = function() { discoverDomains(); };
+        body.appendChild(discBtn);
+    }
+
+    var saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-save-section';
+    saveBtn.textContent = 'Save ' + titleCase(sectionKey);
+    saveBtn.onclick = function() { saveConfigSection(sectionKey, schema); };
+    body.appendChild(saveBtn);
+
+    section.appendChild(body);
+    return section;
+}
+
+function createToggle(sectionKey, key, fieldType, checked) {
+    var wrap = document.createElement('label');
+    wrap.className = 'toggle-switch';
+
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = checked;
+    cb.id = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
+
+    if (fieldType === 'module_toggle') {
+        cb.onchange = function() { toggleModule(sectionKey, cb.checked); };
+    }
+
+    wrap.appendChild(cb);
+    var slider = document.createElement('span');
+    slider.className = 'toggle-slider';
+    wrap.appendChild(slider);
+    return wrap;
+}
+
+function createTagInput(sectionKey, key, fieldType, values) {
+    var container = document.createElement('div');
+    container.className = 'tag-input-container';
+    container.id = 'tags-' + sectionKey.replace('.', '-') + '-' + key;
+    container.setAttribute('data-field-type', fieldType);
+
+    values.forEach(function(v) { addTag(container, String(v)); });
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tag-add-input';
+    input.placeholder = fieldType === 'number_array' ? 'Add number...' : 'Add item...';
+    input.onkeydown = function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            var val = input.value.trim();
+            if (!val) return;
+            if (fieldType === 'number_array' && isNaN(Number(val))) {
+                input.style.borderColor = 'var(--accent-red)';
+                return;
+            }
+            input.style.borderColor = '';
+            addTag(container, val);
+            input.value = '';
+        }
+    };
+    container.appendChild(input);
+    return container;
+}
+
+function addTag(container, value) {
+    var input = container.querySelector('.tag-add-input');
+    var pill = document.createElement('span');
+    pill.className = 'tag-pill';
+    pill.setAttribute('data-value', value);
+    pill.textContent = value + ' ';
+    var close = document.createElement('button');
+    close.className = 'tag-remove';
+    close.textContent = '\u00D7';
+    close.onclick = function() { pill.remove(); };
+    pill.appendChild(close);
+    if (input) {
+        container.insertBefore(pill, input);
+    } else {
+        container.appendChild(pill);
+    }
+}
+
+function getTagValues(container) {
+    var pills = container.querySelectorAll('.tag-pill');
+    var values = [];
+    pills.forEach(function(p) { values.push(p.getAttribute('data-value')); });
+    return values;
+}
+
+function saveConfigSection(sectionKey, schema) {
+    var updates = {};
+    Object.keys(schema).forEach(function(key) {
+        var fieldType = schema[key];
+        if (fieldType === 'skip') return;
+
+        var elId = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
+
+        if (fieldType === 'bool' || fieldType === 'module_toggle') {
+            var el = document.getElementById(elId);
+            if (el) updates[key] = el.checked;
+        } else if (fieldType === 'number') {
+            var el = document.getElementById(elId);
+            if (el && el.value !== '') updates[key] = Number(el.value);
+        } else if (fieldType === 'string') {
+            var el = document.getElementById(elId);
+            if (el) updates[key] = el.value;
+        } else if (fieldType === 'secret') {
+            var el = document.getElementById(elId);
+            if (el) updates[key] = el.value;
+        } else if (fieldType === 'string_array') {
+            var tc = document.getElementById('tags-' + sectionKey.replace('.', '-') + '-' + key);
+            if (tc) updates[key] = getTagValues(tc);
+        } else if (fieldType === 'number_array') {
+            var tc = document.getElementById('tags-' + sectionKey.replace('.', '-') + '-' + key);
+            if (tc) updates[key] = getTagValues(tc).map(function(v) { return Number(v); });
+        }
+    });
+
+    var feedbackId = 'feedback-' + sectionKey.replace('.', '-');
+    var feedback = document.getElementById(feedbackId);
+    if (feedback) {
+        feedback.textContent = 'Saving...';
+        feedback.className = 'config-feedback';
+    }
+
+    fetch('/api/config?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ section: sectionKey, updates: updates })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!feedback) return;
+        if (data.status === 'ok') {
+            feedback.textContent = 'Saved. Restart aegis to apply changes.';
+            feedback.className = 'config-feedback config-feedback-ok';
+            if (data.warnings && data.warnings.length > 0) {
+                feedback.textContent += ' Warnings: ' + data.warnings.join('; ');
+                feedback.className = 'config-feedback config-feedback-warn';
+            }
+        } else {
+            feedback.textContent = 'Error: ' + (data.message || 'Unknown error');
+            feedback.className = 'config-feedback config-feedback-err';
+        }
+    })
+    .catch(function(err) {
+        if (feedback) {
+            feedback.textContent = 'Error: ' + err;
+            feedback.className = 'config-feedback config-feedback-err';
+        }
+    });
+}
+
+function toggleModule(module, enabled) {
+    fetch('/api/module/toggle?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ module: module, enabled: enabled })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.status === 'ok') {
+            showResult('Module Updated', data.message, false);
+        } else {
+            showResult('Toggle Failed', data.message || 'Unknown error', true);
+        }
+    })
+    .catch(function(err) {
+        showResult('Toggle Failed', 'Error: ' + err, true);
+    });
+}
+
+function discoverPorts() {
+    showModal('Discovering Ports', '<p>Scanning listening ports...</p>', '');
+    fetch('/api/discover/ports?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var body = document.createElement('div');
+
+            var listeningP = document.createElement('p');
+            listeningP.style.marginBottom = '12px';
+            var listeningB = document.createElement('strong');
+            listeningB.textContent = 'Currently listening: ';
+            listeningP.appendChild(listeningB);
+            listeningP.appendChild(document.createTextNode((data.listening_ports || []).join(', ')));
+            body.appendChild(listeningP);
+
+            var suggestP = document.createElement('p');
+            var suggestB = document.createElement('strong');
+            suggestB.textContent = 'Suggested honeypot ports (not in use):';
+            suggestP.appendChild(suggestB);
+            suggestP.style.marginBottom = '8px';
+            body.appendChild(suggestP);
+
+            var checkboxDiv = document.createElement('div');
+            checkboxDiv.style.margin = '8px 0';
+            (data.suggested_honeypot_ports || []).forEach(function(item) {
+                var port = item.port || item;
+                var service = item.service || '';
+                var label = document.createElement('label');
+                label.style.cssText = 'display:block;padding:3px 0;cursor:pointer;font-size:13px';
+                var cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'discover-port-cb';
+                cb.value = port;
+                cb.style.marginRight = '8px';
+                label.appendChild(cb);
+                label.appendChild(document.createTextNode(port + (service ? ' (' + service + ')' : '')));
+                checkboxDiv.appendChild(label);
+            });
+            body.appendChild(checkboxDiv);
+
+            document.getElementById('modal-title').textContent = 'Port Discovery';
+            var modalBody = document.getElementById('modal-body');
+            modalBody.textContent = '';
+            modalBody.appendChild(body);
+
+            var footer = document.getElementById('modal-footer');
+            footer.textContent = '';
+            var applyBtn = document.createElement('button');
+            applyBtn.style.background = 'var(--btn-green)';
+            applyBtn.textContent = 'Apply Selected';
+            applyBtn.onclick = function() {
+                var selected = [];
+                document.querySelectorAll('.discover-port-cb:checked').forEach(function(cb) {
+                    selected.push(cb.value);
+                });
+                applyDiscoveredPorts(selected);
+                hideModal();
+            };
+            footer.appendChild(applyBtn);
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'btn-modal-cancel';
+            closeBtn.textContent = 'Cancel';
+            closeBtn.onclick = hideModal;
+            footer.appendChild(closeBtn);
+        })
+        .catch(function(err) {
+            showResult('Discovery Failed', 'Error: ' + err, true);
+        });
+}
+
+function applyDiscoveredPorts(ports) {
+    var tagContainer = document.getElementById('tags-honeypot-ports');
+    if (!tagContainer) return;
+    ports.forEach(function(port) {
+        var existing = getTagValues(tagContainer);
+        if (existing.indexOf(String(port)) === -1) {
+            addTag(tagContainer, String(port));
+        }
+    });
+}
+
+function discoverDomains() {
+    showModal('Discovering Domains', '<p>Scanning nginx configs...</p>', '');
+    fetch('/api/discover/domains?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var body = document.createElement('div');
+
+            if (data.errors && data.errors.length > 0) {
+                var errP = document.createElement('p');
+                errP.style.cssText = 'color:var(--accent-gold);margin-bottom:8px;font-size:12px';
+                errP.textContent = 'Notes: ' + data.errors.join('; ');
+                body.appendChild(errP);
+            }
+
+            var domains = data.domains || [];
+            if (domains.length === 0) {
+                var noP = document.createElement('p');
+                noP.textContent = 'No SSL domains found in nginx configs.';
+                body.appendChild(noP);
+            } else {
+                var p = document.createElement('p');
+                var pB = document.createElement('strong');
+                pB.textContent = 'SSL domains found:';
+                p.appendChild(pB);
+                p.style.marginBottom = '8px';
+                body.appendChild(p);
+
+                var checkboxDiv = document.createElement('div');
+                checkboxDiv.style.margin = '8px 0';
+                domains.forEach(function(domain) {
+                    var label = document.createElement('label');
+                    label.style.cssText = 'display:block;padding:3px 0;cursor:pointer;font-size:13px';
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.className = 'discover-domain-cb';
+                    cb.value = domain;
+                    cb.checked = true;
+                    cb.style.marginRight = '8px';
+                    label.appendChild(cb);
+                    label.appendChild(document.createTextNode(domain));
+                    checkboxDiv.appendChild(label);
+                });
+                body.appendChild(checkboxDiv);
+            }
+
+            document.getElementById('modal-title').textContent = 'Domain Discovery';
+            var modalBody = document.getElementById('modal-body');
+            modalBody.textContent = '';
+            modalBody.appendChild(body);
+
+            var footer = document.getElementById('modal-footer');
+            footer.textContent = '';
+            if (domains.length > 0) {
+                var applyBtn = document.createElement('button');
+                applyBtn.style.background = 'var(--btn-green)';
+                applyBtn.textContent = 'Apply Selected';
+                applyBtn.onclick = function() {
+                    var selected = [];
+                    document.querySelectorAll('.discover-domain-cb:checked').forEach(function(cb) {
+                        selected.push(cb.value);
+                    });
+                    applyDiscoveredDomains(selected);
+                    hideModal();
+                };
+                footer.appendChild(applyBtn);
+            }
+            var closeBtn = document.createElement('button');
+            closeBtn.className = 'btn-modal-cancel';
+            closeBtn.textContent = 'Close';
+            closeBtn.onclick = hideModal;
+            footer.appendChild(closeBtn);
+        })
+        .catch(function(err) {
+            showResult('Discovery Failed', 'Error: ' + err, true);
+        });
+}
+
+function applyDiscoveredDomains(domains) {
+    var tagContainer = document.getElementById('tags-cert-domains');
+    if (!tagContainer) return;
+    domains.forEach(function(domain) {
+        var existing = getTagValues(tagContainer);
+        if (existing.indexOf(domain) === -1) {
+            addTag(tagContainer, domain);
+        }
+    });
+}
+
+// Auto-init config page
+(function() {
+    if (document.getElementById('config-sections')) renderConfigPage();
+})();

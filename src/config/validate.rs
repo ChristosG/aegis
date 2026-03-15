@@ -61,6 +61,7 @@ fn validate_general(config: &AegisConfig, result: &mut ValidationResult) {
         "threat_intel",
         "anomaly",
         "honeypot",
+        "cert",
     ];
     for module in &config.general.modules {
         if !valid_modules.contains(&module.as_str()) {

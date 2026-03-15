@@ -1,10 +1,52 @@
+use std::collections::HashSet;
+use std::path::Path;
+
 use axum::{
     extract::State,
     response::{Html, Json},
 };
+use tracing::warn;
 
+use crate::config::defaults::find_config_path;
+use crate::util::proc_parse;
 use crate::web::server::AppContext;
 use crate::web::templates;
+
+/// Sections allowed for generic config updates (everything except dashboard).
+const ALLOWED_SECTIONS: &[&str] = &[
+    "general",
+    "network",
+    "process",
+    "file_integrity",
+    "auth",
+    "web",
+    "threat_intel",
+    "response",
+    "response.geoip",
+    "alerting",
+    "alerting.email",
+    "alerting.slack",
+    "alerting.telegram",
+    "alerting.webhook",
+    "anomaly",
+    "honeypot",
+    "cert",
+];
+
+/// All valid module names for toggle endpoint.
+const VALID_MODULES: &[&str] = &[
+    "network",
+    "process",
+    "file_integrity",
+    "auth",
+    "web",
+    "threat_intel",
+    "anomaly",
+    "honeypot",
+    "cert",
+];
+
+// ─── Existing endpoints ───────────────────────────────────────────────────────
 
 /// Return sanitized config (masks sensitive fields).
 pub async fn api_config(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
@@ -39,6 +81,16 @@ pub async fn api_config(State(ctx): State<AppContext>) -> Json<serde_json::Value
                 }
             }
         }
+        // Mask GeoIP license key
+        if let Some(response) = obj.get_mut("response").and_then(|r| r.as_object_mut()) {
+            if let Some(geoip) = response.get_mut("geoip").and_then(|g| g.as_object_mut()) {
+                if let Some(key) = geoip.get("maxmind_license_key").and_then(|k| k.as_str()) {
+                    if !key.is_empty() {
+                        geoip.insert("maxmind_license_key".to_string(), serde_json::json!("***"));
+                    }
+                }
+            }
+        }
         // Mask dashboard token file path
         if let Some(dashboard) = obj.get_mut("dashboard").and_then(|d| d.as_object_mut()) {
             dashboard.remove("token_file");
@@ -48,65 +100,16 @@ pub async fn api_config(State(ctx): State<AppContext>) -> Json<serde_json::Value
     Json(config_json)
 }
 
-/// Render config as a structured HTML page with collapsible sections.
+/// Render config page — minimal skeleton, JS builds editable forms via /api/config.
 pub async fn config_page(State(ctx): State<AppContext>) -> Html<String> {
-    let config = &*ctx.config;
-    let config_json = serde_json::to_value(config).unwrap_or(serde_json::json!({}));
-
-    let mut sections = String::new();
-    if let Some(obj) = config_json.as_object() {
-        for (section_name, section_val) in obj {
-            if section_name == "dashboard" {
-                continue; // Don't show dashboard config (contains token path)
-            }
-            let label = section_name.replace('_', " ");
-            let label = label
-                .split(' ')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-
-            let mut rows = String::new();
-            if let Some(section_obj) = section_val.as_object() {
-                for (key, val) in section_obj {
-                    let display_val = sanitize_config_value(section_name, key, val);
-                    let escaped_key = templates::html_escape_pub(key);
-                    let escaped_val = templates::html_escape_pub(&display_val);
-                    rows.push_str(&format!(
-                        r#"<div class="config-row"><span class="config-key">{escaped_key}</span><span class="config-value">{escaped_val}</span></div>"#,
-                    ));
-                }
-            }
-
-            let escaped_label = templates::html_escape_pub(&label);
-            sections.push_str(&format!(
-                r#"<div class="config-section">
-                    <div class="config-section-header" onclick="toggleConfigSection(this)">
-                        <span>{escaped_label}</span>
-                        <span style="color:var(--text-muted)">&#9662;</span>
-                    </div>
-                    <div class="config-section-body">{rows}</div>
-                </div>"#,
-            ));
-        }
-    }
-
-    let content = format!(
-        r#"
+    let content = r#"
         <div style="margin-bottom:16px">
             <button onclick="validateConfig()">Validate Config</button>
         </div>
-        {sections}
-        "#,
-    );
+        <div id="config-sections">Loading...</div>
+    "#;
 
-    Html(templates::render_config_page(&content, &ctx.api_token))
+    Html(templates::render_config_page(content, &ctx.api_token))
 }
 
 /// Config validation API endpoint.
@@ -120,32 +123,474 @@ pub async fn api_check(State(ctx): State<AppContext>) -> Json<serde_json::Value>
     }))
 }
 
-fn sanitize_config_value(section: &str, key: &str, val: &serde_json::Value) -> String {
-    // Mask sensitive values
-    if section == "alerting" {
-        if key == "smtp_password" || key == "bot_token" {
-            return "***".to_string();
+// ─── Generic config update ────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ConfigUpdateRequest {
+    section: String,
+    updates: serde_json::Map<String, serde_json::Value>,
+}
+
+/// POST /api/config — Update a config section.
+pub async fn api_config_update(
+    State(_ctx): State<AppContext>,
+    Json(payload): Json<ConfigUpdateRequest>,
+) -> Json<serde_json::Value> {
+    // Validate section name
+    if !ALLOWED_SECTIONS.contains(&payload.section.as_str()) {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("Invalid section: '{}'. Allowed: {}", payload.section, ALLOWED_SECTIONS.join(", "))
+        }));
+    }
+
+    // Load config file
+    let config_path = match find_config_path(None) {
+        Some(p) => p,
+        None => {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "No config file found."
+            }));
         }
-        if (key == "webhook_url" || key == "url") && val.as_str().is_some_and(|s| !s.is_empty()) {
-            return "***".to_string();
+    };
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "Failed to read config file");
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to read config: {}", e)
+            }));
+        }
+    };
+
+    let mut doc = match content.parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "Failed to parse config file");
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to parse config: {}", e)
+            }));
+        }
+    };
+
+    // Navigate to the correct table using dot-notation
+    let section_parts: Vec<&str> = payload.section.split('.').collect();
+
+    // Ensure tables exist
+    for i in 0..section_parts.len() {
+        let key = section_parts[i];
+        if i == 0 {
+            if !doc.contains_key(key) {
+                doc[key] = toml_edit::Item::Table(toml_edit::Table::new());
+            }
+        } else {
+            // Navigate through nested tables
+            let parent = section_parts[0];
+            if i == 1 {
+                if let Some(parent_table) = doc[parent].as_table_mut() {
+                    if !parent_table.contains_key(key) {
+                        parent_table[key] = toml_edit::Item::Table(toml_edit::Table::new());
+                    }
+                }
+            }
         }
     }
 
-    match val {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Array(arr) => {
-            let items: Vec<String> = arr
-                .iter()
-                .map(|v| match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .collect();
-            items.join(", ")
+    // Apply updates
+    for (key, val) in &payload.updates {
+        // Skip masked secrets sent back unchanged
+        if val.as_str() == Some("***") {
+            continue;
         }
-        serde_json::Value::Object(_) => "[nested]".to_string(),
-        serde_json::Value::Null => "null".to_string(),
+
+        let toml_item = match json_to_toml_value(val) {
+            Some(item) => item,
+            None => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "message": format!("Unsupported value type for key '{}'. Objects and null are not supported.", key)
+                }));
+            }
+        };
+
+        match section_parts.len() {
+            1 => {
+                doc[section_parts[0]][key.as_str()] = toml_item;
+            }
+            2 => {
+                doc[section_parts[0]][section_parts[1]][key.as_str()] = toml_item;
+            }
+            _ => {
+                return Json(serde_json::json!({
+                    "status": "error",
+                    "message": "Section nesting deeper than 2 levels is not supported."
+                }));
+            }
+        }
+    }
+
+    // Write to disk
+    if let Err(e) = std::fs::write(&config_path, doc.to_string()) {
+        warn!(error = %e, "Failed to write config file");
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("Failed to write config: {}", e)
+        }));
+    }
+
+    // Re-validate
+    let warnings = match std::fs::read_to_string(&config_path) {
+        Ok(raw) => match toml::from_str::<crate::config::schema::AegisConfig>(&raw) {
+            Ok(cfg) => {
+                let result = crate::config::validate::validate_config(&cfg);
+                result.warnings
+            }
+            Err(_) => vec![],
+        },
+        Err(_) => vec![],
+    };
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "requires_restart": true,
+        "warnings": warnings,
+    }))
+}
+
+/// Convert a JSON value to a toml_edit Item.
+fn json_to_toml_value(val: &serde_json::Value) -> Option<toml_edit::Item> {
+    match val {
+        serde_json::Value::Bool(b) => Some(toml_edit::value(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml_edit::value(i))
+            } else {
+                n.as_f64().map(toml_edit::value)
+            }
+        }
+        serde_json::Value::String(s) => Some(toml_edit::value(s.as_str())),
+        serde_json::Value::Array(arr) => {
+            let mut toml_arr = toml_edit::Array::new();
+            for item in arr {
+                match item {
+                    serde_json::Value::Bool(b) => toml_arr.push(*b),
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            toml_arr.push(i);
+                        } else if let Some(f) = n.as_f64() {
+                            toml_arr.push(f);
+                        }
+                    }
+                    serde_json::Value::String(s) => toml_arr.push(s.as_str()),
+                    _ => return None,
+                }
+            }
+            Some(toml_edit::value(toml_arr))
+        }
+        // Objects and null not supported
+        _ => None,
+    }
+}
+
+// ─── Module toggle ────────────────────────────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct ModuleToggleRequest {
+    module: String,
+    enabled: bool,
+}
+
+/// POST /api/module/toggle — Enable/disable a module and sync the modules list.
+pub async fn api_module_toggle(
+    State(_ctx): State<AppContext>,
+    Json(payload): Json<ModuleToggleRequest>,
+) -> Json<serde_json::Value> {
+    if !VALID_MODULES.contains(&payload.module.as_str()) {
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("Invalid module: '{}'. Valid: {}", payload.module, VALID_MODULES.join(", "))
+        }));
+    }
+
+    let config_path = match find_config_path(None) {
+        Some(p) => p,
+        None => {
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": "No config file found."
+            }));
+        }
+    };
+
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "Failed to read config file");
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to read config: {}", e)
+            }));
+        }
+    };
+
+    let mut doc = match content.parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "Failed to parse config file");
+            return Json(serde_json::json!({
+                "status": "error",
+                "message": format!("Failed to parse config: {}", e)
+            }));
+        }
+    };
+
+    // Ensure the module section exists
+    if !doc.contains_key(&payload.module) {
+        doc[&payload.module] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    doc[&payload.module]["enabled"] = toml_edit::value(payload.enabled);
+
+    // Auto-sync [general].modules list
+    if !doc.contains_key("general") {
+        doc["general"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+
+    // Read current modules list
+    let current_modules: Vec<String> = doc["general"]
+        .get("modules")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let has_module = current_modules.iter().any(|m| m == &payload.module);
+
+    if payload.enabled && !has_module {
+        // Add module to list
+        let mut new_arr = toml_edit::Array::new();
+        for m in &current_modules {
+            new_arr.push(m.as_str());
+        }
+        new_arr.push(payload.module.as_str());
+        doc["general"]["modules"] = toml_edit::value(new_arr);
+    } else if !payload.enabled && has_module {
+        // Remove module from list
+        let mut new_arr = toml_edit::Array::new();
+        for m in &current_modules {
+            if m != &payload.module {
+                new_arr.push(m.as_str());
+            }
+        }
+        doc["general"]["modules"] = toml_edit::value(new_arr);
+    }
+
+    if let Err(e) = std::fs::write(&config_path, doc.to_string()) {
+        warn!(error = %e, "Failed to write config file");
+        return Json(serde_json::json!({
+            "status": "error",
+            "message": format!("Failed to write config: {}", e)
+        }));
+    }
+
+    let state_str = if payload.enabled {
+        "enabled"
+    } else {
+        "disabled"
+    };
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "requires_restart": true,
+        "message": format!("Module '{}' {}. Restart aegis to apply.", payload.module, state_str)
+    }))
+}
+
+// ─── Smart discovery: ports ───────────────────────────────────────────────────
+
+/// Common attack-target ports for honeypot suggestions.
+const HONEYPOT_CANDIDATE_PORTS: &[(u16, &str)] = &[
+    (21, "FTP"),
+    (23, "Telnet"),
+    (25, "SMTP"),
+    (110, "POP3"),
+    (143, "IMAP"),
+    (445, "SMB"),
+    (1433, "MSSQL"),
+    (1521, "Oracle"),
+    (2222, "alt-SSH"),
+    (3306, "MySQL"),
+    (3389, "RDP"),
+    (4444, "Metasploit"),
+    (5432, "Postgres"),
+    (5555, "ADB"),
+    (5900, "VNC"),
+    (6379, "Redis"),
+    (8080, "HTTP-alt"),
+    (8443, "HTTPS-alt"),
+    (9200, "Elasticsearch"),
+    (27017, "MongoDB"),
+];
+
+/// GET /api/discover/ports — Discover listening ports and suggest honeypot ports.
+pub async fn api_discover_ports(State(_ctx): State<AppContext>) -> Json<serde_json::Value> {
+    let mut listening_ports: HashSet<u16> = HashSet::new();
+
+    for proc_path in &["/proc/net/tcp", "/proc/net/tcp6"] {
+        let path = Path::new(proc_path);
+        if let Ok(content) = proc_parse::read_proc_file(path) {
+            for line in content.lines().skip(1) {
+                if let Ok((_lip, lport, _rip, _rport, state)) = proc_parse::parse_tcp_line(line) {
+                    if state == proc_parse::tcp_state::LISTEN && lport > 0 {
+                        listening_ports.insert(lport);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut listening_sorted: Vec<u16> = listening_ports.iter().copied().collect();
+    listening_sorted.sort();
+
+    let suggested: Vec<serde_json::Value> = HONEYPOT_CANDIDATE_PORTS
+        .iter()
+        .filter(|(port, _)| !listening_ports.contains(port))
+        .map(|(port, label)| serde_json::json!({ "port": port, "service": label }))
+        .collect();
+
+    Json(serde_json::json!({
+        "listening_ports": listening_sorted,
+        "suggested_honeypot_ports": suggested,
+    }))
+}
+
+// ─── Smart discovery: nginx SSL domains ───────────────────────────────────────
+
+/// GET /api/discover/domains — Scan nginx configs for SSL-enabled domains.
+pub async fn api_discover_domains(State(_ctx): State<AppContext>) -> Json<serde_json::Value> {
+    let mut domains: HashSet<String> = HashSet::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    let config_dirs = ["/etc/nginx/sites-enabled", "/etc/nginx/conf.d"];
+    let single_files = ["/etc/nginx/nginx.conf"];
+
+    let mut files_to_scan: Vec<std::path::PathBuf> = Vec::new();
+
+    for dir in &config_dirs {
+        let path = Path::new(dir);
+        if path.is_dir() {
+            match std::fs::read_dir(path) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_file() {
+                            files_to_scan.push(p);
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors.push(format!("Cannot read {}: {}", dir, e));
+                }
+            }
+        }
+    }
+
+    for f in &single_files {
+        let path = Path::new(f);
+        if path.is_file() {
+            files_to_scan.push(path.to_path_buf());
+        }
+    }
+
+    for file_path in &files_to_scan {
+        match std::fs::read_to_string(file_path) {
+            Ok(content) => {
+                parse_nginx_ssl_domains(&content, &mut domains);
+            }
+            Err(e) => {
+                errors.push(format!("Cannot read {}: {}", file_path.display(), e));
+            }
+        }
+    }
+
+    let mut domain_list: Vec<String> = domains.into_iter().collect();
+    domain_list.sort();
+
+    Json(serde_json::json!({
+        "domains": domain_list,
+        "errors": errors,
+    }))
+}
+
+/// Heuristic parser for nginx configs: find server blocks with both
+/// server_name and ssl_certificate directives.
+fn parse_nginx_ssl_domains(content: &str, domains: &mut HashSet<String>) {
+    // Track state per server block (approximation: brace depth)
+    let mut depth: i32 = 0;
+    let mut in_server_block = false;
+    let mut server_names: Vec<String> = Vec::new();
+    let mut has_ssl = false;
+    let mut server_depth: i32 = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Track brace depth
+        let opens = trimmed.chars().filter(|&c| c == '{').count() as i32;
+        let closes = trimmed.chars().filter(|&c| c == '}').count() as i32;
+
+        if trimmed.starts_with("server") && trimmed.contains('{') && !in_server_block {
+            in_server_block = true;
+            server_names.clear();
+            has_ssl = false;
+            server_depth = depth;
+        }
+
+        depth += opens;
+        depth -= closes;
+
+        if in_server_block {
+            // Parse server_name directive
+            if trimmed.starts_with("server_name") {
+                let names_part = trimmed
+                    .trim_start_matches("server_name")
+                    .trim_end_matches(';')
+                    .trim();
+                for name in names_part.split_whitespace() {
+                    let name = name.trim();
+                    // Filter out catch-all and dot-prefixed patterns
+                    if name != "_" && !name.starts_with('.') && !name.is_empty() {
+                        server_names.push(name.to_string());
+                    }
+                }
+            }
+
+            // Detect SSL
+            if trimmed.starts_with("ssl_certificate") && !trimmed.starts_with("ssl_certificate_key")
+            {
+                has_ssl = true;
+            }
+            if trimmed.contains("listen") && trimmed.contains("ssl") {
+                has_ssl = true;
+            }
+
+            // Check if server block closed
+            if depth <= server_depth {
+                if has_ssl {
+                    for name in &server_names {
+                        domains.insert(name.clone());
+                    }
+                }
+                in_server_block = false;
+                server_names.clear();
+                has_ssl = false;
+            }
+        }
     }
 }

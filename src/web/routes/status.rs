@@ -20,6 +20,7 @@ pub async fn status_page(State(ctx): State<AppContext>) -> Html<String> {
         ("threat_intel", config.threat_intel.enabled),
         ("anomaly", config.anomaly.enabled),
         ("honeypot", config.honeypot.enabled),
+        ("cert", config.cert.enabled),
     ];
 
     let mut module_cards = String::new();
@@ -178,6 +179,7 @@ pub async fn api_status(State(ctx): State<AppContext>) -> Json<serde_json::Value
         ("threat_intel", config.threat_intel.enabled),
         ("anomaly", config.anomaly.enabled),
         ("honeypot", config.honeypot.enabled),
+        ("cert", config.cert.enabled),
     ]
     .iter()
     .map(|(name, enabled)| serde_json::json!({ "name": name, "enabled": enabled }))

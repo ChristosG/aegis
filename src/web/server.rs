@@ -95,7 +95,22 @@ pub async fn start_server(
             "/api/whitelist/{cidr}",
             delete(routes::whitelist::api_whitelist_remove),
         )
-        .route("/api/config", get(routes::config::api_config))
+        .route(
+            "/api/config",
+            get(routes::config::api_config).post(routes::config::api_config_update),
+        )
+        .route(
+            "/api/module/toggle",
+            post(routes::config::api_module_toggle),
+        )
+        .route(
+            "/api/discover/ports",
+            get(routes::config::api_discover_ports),
+        )
+        .route(
+            "/api/discover/domains",
+            get(routes::config::api_discover_domains),
+        )
         .route("/api/check", post(routes::config::api_check))
         .route("/api/scan", post(routes::scan::api_scan))
         .route("/api/respond", post(routes::scan::api_respond))

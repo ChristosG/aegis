@@ -171,6 +171,41 @@ button:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2p
 .date-filter input[type="date"] { background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: inherit; }
 .date-filter input[type="date"]:focus { outline: none; border-color: var(--accent-blue); }
 
+/* Toggle switch */
+.toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; cursor: pointer; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--border-primary); border-radius: 22px; transition: background 0.2s; }
+.toggle-slider::before { content: ''; position: absolute; left: 3px; bottom: 3px; width: 16px; height: 16px; background: var(--text-muted); border-radius: 50%; transition: transform 0.2s, background 0.2s; }
+.toggle-switch input:checked + .toggle-slider { background: var(--btn-green); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); background: #fff; }
+
+/* Tag/pill inputs */
+.tag-input-container { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; background: var(--bg-primary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 4px 8px; min-height: 34px; }
+.tag-pill { display: inline-flex; align-items: center; background: var(--border-secondary); border: 1px solid var(--border-primary); border-radius: 4px; padding: 2px 8px; font-size: 12px; color: var(--text-secondary); gap: 4px; }
+.tag-remove { background: none; border: none; color: var(--text-muted); font-size: 14px; cursor: pointer; padding: 0; margin: 0; line-height: 1; }
+.tag-remove:hover { color: var(--accent-red); background: none; }
+.tag-add-input { background: transparent; border: none; color: var(--text-secondary); font-size: 13px; font-family: inherit; outline: none; min-width: 100px; flex: 1; padding: 4px 0; }
+.tag-add-input::placeholder { color: var(--text-placeholder); }
+
+/* Editable config rows */
+.config-edit-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border-secondary); }
+.config-edit-label { color: var(--text-muted); font-size: 13px; min-width: 160px; flex-shrink: 0; }
+.config-edit-input { flex: 1; display: flex; justify-content: flex-end; }
+.cfg-input { background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border-primary); border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: inherit; width: 100%; max-width: 300px; }
+.cfg-input:focus { outline: none; border-color: var(--accent-blue); box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
+
+/* Discovery & save buttons */
+.btn-discover { background: var(--border-secondary); color: var(--text-secondary); border: 1px solid var(--border-primary); padding: 6px 14px; border-radius: 6px; font-size: 12px; margin-top: 12px; margin-right: 8px; cursor: pointer; }
+.btn-discover:hover { background: var(--border-primary); color: var(--text-primary); }
+.btn-save-section { background: var(--btn-green); color: #fff; border: none; padding: 8px 20px; border-radius: 6px; font-size: 13px; margin-top: 12px; cursor: pointer; }
+.btn-save-section:hover { background: var(--btn-green-hover); }
+
+/* Config feedback */
+.config-feedback { font-size: 12px; min-height: 18px; margin-bottom: 4px; }
+.config-feedback-ok { color: var(--accent-green); }
+.config-feedback-warn { color: var(--accent-gold); }
+.config-feedback-err { color: var(--accent-red); }
+
 /* Mobile responsive */
 .hamburger { display: none; background: none; border: none; color: var(--text-primary); font-size: 24px; cursor: pointer; padding: 4px 8px; margin: 0; }
 .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 99; }

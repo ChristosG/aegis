@@ -575,6 +575,9 @@ pub struct GeoipConfig {
     pub enabled: bool,
     /// Path to the MaxMind GeoLite2-Country.mmdb file.
     pub database_path: String,
+    /// MaxMind license key for downloading the GeoIP database.
+    #[serde(default)]
+    pub maxmind_license_key: String,
     /// ISO country codes to block (e.g. ["CN", "RU"]).
     pub blocked_countries: Vec<String>,
     /// ISO country codes to allow (if non-empty, only these are allowed).
@@ -586,6 +589,7 @@ impl Default for GeoipConfig {
         Self {
             enabled: false,
             database_path: "~/.aegis/GeoLite2-Country.mmdb".into(),
+            maxmind_license_key: String::new(),
             blocked_countries: Vec::new(),
             allowed_countries: Vec::new(),
         }
