@@ -73,18 +73,22 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         .take(30)
         .map(|t| {
             let sev_class = severity_class(t.severity);
+            let sev_lower = format!("{}", t.severity).to_lowercase();
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
+            let full_desc = html_escape(&t.description);
             format!(
-                r#"<tr>
+                r#"<tr data-severity="{sev_lower}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
-                    <td>{description}</td>
+                    <td class="has-tooltip" title="{full_desc}" data-tooltip="{full_desc}">{description}</td>
                     <td>{ip}</td>
                     <td>{time}</td>
                 </tr>"#,
+                sev_lower = sev_lower,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
+                full_desc = full_desc,
                 description = truncate(&t.description, 80),
                 ip = ip,
                 time = t.timestamp.format("%H:%M:%S"),
@@ -115,11 +119,11 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         <div class="severity-breakdown">
             <h3>Severity Breakdown</h3>
             <div class="severity-bars">
-                <div class="sev-row"><span class="sev-label critical">Critical</span><span class="sev-count" data-sev="critical">{critical}</span></div>
-                <div class="sev-row"><span class="sev-label high">High</span><span class="sev-count" data-sev="high">{high}</span></div>
-                <div class="sev-row"><span class="sev-label medium">Medium</span><span class="sev-count" data-sev="medium">{medium}</span></div>
-                <div class="sev-row"><span class="sev-label low">Low</span><span class="sev-count" data-sev="low">{low}</span></div>
-                <div class="sev-row"><span class="sev-label info">Info</span><span class="sev-count" data-sev="info">{info_count}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="critical" onclick="filterBySeverity('critical')"><span class="sev-label critical">Critical</span><span class="sev-count" data-sev="critical">{critical}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="high" onclick="filterBySeverity('high')"><span class="sev-label high">High</span><span class="sev-count" data-sev="high">{high}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="medium" onclick="filterBySeverity('medium')"><span class="sev-label medium">Medium</span><span class="sev-count" data-sev="medium">{medium}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="low" onclick="filterBySeverity('low')"><span class="sev-label low">Low</span><span class="sev-count" data-sev="low">{low}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="info" onclick="filterBySeverity('info')"><span class="sev-label info">Info</span><span class="sev-count" data-sev="info">{info_count}</span></div>
             </div>
         </div>
         <div class="actions">
@@ -131,9 +135,16 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         <div class="section">
             <h3>Recent Threats</h3>
             <div id="live-threats"></div>
-            <table class="threats-table">
+            <div id="filter-bar" class="filter-bar" style="display:none"></div>
+            <table class="threats-table" id="dashboard-threats-table">
                 <thead>
-                    <tr><th>Severity</th><th>Type</th><th>Description</th><th>Source IP</th><th>Time</th></tr>
+                    <tr>
+                        <th class="sortable" onclick="sortTable('dashboard-threats-table',0)">Severity</th>
+                        <th class="sortable" onclick="sortTable('dashboard-threats-table',1)">Type</th>
+                        <th class="sortable" onclick="sortTable('dashboard-threats-table',2)">Description</th>
+                        <th class="sortable" onclick="sortTable('dashboard-threats-table',3)">Source IP</th>
+                        <th class="sortable" onclick="sortTable('dashboard-threats-table',4)">Time</th>
+                    </tr>
                 </thead>
                 <tbody id="recent-threats-body">{recent_threats}</tbody>
             </table>
@@ -162,13 +173,15 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
         .rev()
         .map(|t| {
             let sev_class = severity_class(t.severity);
+            let sev_lower = format!("{}", t.severity).to_lowercase();
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
             let responded = if t.auto_responded { "Yes" } else { "No" };
+            let full_desc = html_escape(&t.description);
             format!(
-                r#"<tr>
+                r#"<tr data-severity="{sev_lower}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
-                    <td>{description}</td>
+                    <td class="has-tooltip" title="{full_desc}" data-tooltip="{full_desc}">{description}</td>
                     <td>{ip}</td>
                     <td>{module}</td>
                     <td>{responded}</td>
@@ -177,9 +190,11 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                         {block_btn}
                     </td>
                 </tr>"#,
+                sev_lower = sev_lower,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
+                full_desc = full_desc,
                 description = truncate(&t.description, 60),
                 ip = ip,
                 module = t.source_module,
@@ -197,21 +212,49 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
         })
         .collect();
 
+    let counts = state.threat_counts();
+    let critical = counts.get(&ThreatSeverity::Critical).copied().unwrap_or(0);
+    let high = counts.get(&ThreatSeverity::High).copied().unwrap_or(0);
+    let medium = counts.get(&ThreatSeverity::Medium).copied().unwrap_or(0);
+    let low = counts.get(&ThreatSeverity::Low).copied().unwrap_or(0);
+    let info_count = counts.get(&ThreatSeverity::Info).copied().unwrap_or(0);
+
     let content = format!(
         r#"
         <div id="live-threats"></div>
-        <table class="threats-table">
+        <div class="severity-breakdown">
+            <h3>Severity Filter</h3>
+            <div class="severity-bars">
+                <div class="sev-row sev-filter-btn" data-filter-sev="critical" onclick="filterBySeverity('critical')"><span class="sev-label critical">Critical</span><span class="sev-count">{critical}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="high" onclick="filterBySeverity('high')"><span class="sev-label high">High</span><span class="sev-count">{high}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="medium" onclick="filterBySeverity('medium')"><span class="sev-label medium">Medium</span><span class="sev-count">{medium}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="low" onclick="filterBySeverity('low')"><span class="sev-label low">Low</span><span class="sev-count">{low}</span></div>
+                <div class="sev-row sev-filter-btn" data-filter-sev="info" onclick="filterBySeverity('info')"><span class="sev-label info">Info</span><span class="sev-count">{info_count}</span></div>
+            </div>
+        </div>
+        <div id="filter-bar" class="filter-bar" style="display:none"></div>
+        <table class="threats-table" id="threats-page-table">
             <thead>
                 <tr>
-                    <th>Severity</th><th>Type</th><th>Description</th>
-                    <th>Source IP</th><th>Module</th><th>Responded</th>
-                    <th>Time</th><th>Actions</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',0)">Severity</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',1)">Type</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',2)">Description</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',3)">Source IP</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',4)">Module</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',5)">Responded</th>
+                    <th class="sortable" onclick="sortTable('threats-page-table',6)">Time</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
-            <tbody>{rows}</tbody>
+            <tbody id="threats-table-body">{rows}</tbody>
         </table>
         "#,
         rows = rows,
+        critical = critical,
+        high = high,
+        medium = medium,
+        low = low,
+        info_count = info_count,
     );
 
     page_wrapper("Threats", &content, token)
@@ -233,4 +276,12 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         format!("{}...", &s[..max])
     }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
