@@ -84,15 +84,38 @@ if [ -f "${TMP}/aegis.service" ]; then
     info "Service installed to ${SERVICE_DIR}/aegis.service"
 fi
 
-# --- Default config ---
+# --- Config ---
 mkdir -p "$CONFIG_DIR"
-if [ ! -f "${CONFIG_DIR}/aegis.toml" ]; then
-    if [ -f "${TMP}/aegis.toml" ]; then
-        install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml"
-        info "Default config installed to ${CONFIG_DIR}/aegis.toml"
+if [ -f "${CONFIG_DIR}/aegis.toml" ] && [ -f "${TMP}/aegis.toml" ]; then
+    # Upgrade: back up old config and install new one
+    BACKUP="${CONFIG_DIR}/aegis.toml.bak.$(date +%s)"
+    cp "${CONFIG_DIR}/aegis.toml" "$BACKUP"
+    install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml"
+    info "Config updated (backup: $BACKUP)"
+    warn "Review ${CONFIG_DIR}/aegis.toml and re-apply any custom settings from the backup"
+elif [ ! -f "${CONFIG_DIR}/aegis.toml" ] && [ -f "${TMP}/aegis.toml" ]; then
+    install -Dm644 "${TMP}/aegis.toml" "${CONFIG_DIR}/aegis.toml"
+    info "Default config installed to ${CONFIG_DIR}/aegis.toml"
+fi
+
+# --- Enable dashboard for --full installs ---
+if [ "$VARIANT" = "full" ]; then
+    if command -v sed &>/dev/null; then
+        # Enable dashboard in the config
+        sed -i 's/^\[dashboard\]/[dashboard]/' "${CONFIG_DIR}/aegis.toml"
+        sed -i '/^\[dashboard\]$/,/^\[/{s/^enabled = false/enabled = true/}' "${CONFIG_DIR}/aegis.toml"
+        info "Web dashboard enabled in config"
     fi
-else
-    warn "Config ${CONFIG_DIR}/aegis.toml already exists, not overwriting"
+fi
+
+# --- Reload systemd if running ---
+if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
+    systemctl daemon-reload
+    info "Systemd units reloaded"
+    if systemctl is-active --quiet aegis 2>/dev/null; then
+        systemctl restart aegis
+        info "Aegis service restarted"
+    fi
 fi
 
 # --- Done ---
@@ -100,11 +123,13 @@ echo ""
 info "Aegis v${LATEST} installed successfully! (variant: ${VARIANT})"
 echo ""
 echo "  Next steps:"
-echo "    1. sudo aegis init            # system hardening setup"
-echo "    2. sudo aegis init-mail       # (optional) email alerts"
-echo "    3. sudo systemctl enable --now aegis"
+if ! systemctl is-active --quiet aegis 2>/dev/null; then
+    echo "    1. sudo aegis init            # system hardening setup"
+    echo "    2. sudo systemctl enable --now aegis"
+fi
 if [ "$VARIANT" = "full" ]; then
-    echo "    4. Web dashboard: http://127.0.0.1:9443"
-    echo "       Token: sudo cat /etc/aegis/api.token"
+    echo ""
+    echo "  Web dashboard: http://127.0.0.1:9443"
+    echo "  Token: sudo cat /etc/aegis/api.token"
 fi
 echo ""
