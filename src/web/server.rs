@@ -111,6 +111,7 @@ pub async fn start_server(
             "/api/discover/domains",
             get(routes::config::api_discover_domains),
         )
+        .route("/api/restart", post(routes::config::api_restart))
         .route("/api/check", post(routes::config::api_check))
         .route("/api/scan", post(routes::scan::api_scan))
         .route("/api/respond", post(routes::scan::api_respond))

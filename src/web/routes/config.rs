@@ -5,7 +5,7 @@ use axum::{
     extract::State,
     response::{Html, Json},
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::config::defaults::find_config_path;
 use crate::util::proc_parse;
@@ -13,6 +13,8 @@ use crate::web::server::AppContext;
 use crate::web::templates;
 
 /// Sections allowed for generic config updates (everything except dashboard).
+/// Supports dot-notation: "alerting.email" → doc["alerting"]["email"].
+/// Also allows "threat_intel.feeds.*" for per-feed updates (validated dynamically).
 const ALLOWED_SECTIONS: &[&str] = &[
     "general",
     "network",
@@ -103,8 +105,9 @@ pub async fn api_config(State(ctx): State<AppContext>) -> Json<serde_json::Value
 /// Render config page — minimal skeleton, JS builds editable forms via /api/config.
 pub async fn config_page(State(ctx): State<AppContext>) -> Html<String> {
     let content = r#"
-        <div style="margin-bottom:16px">
+        <div style="margin-bottom:16px;display:flex;gap:8px;align-items:center">
             <button onclick="validateConfig()">Validate Config</button>
+            <button class="btn-restart" onclick="restartAegis()">Restart Aegis</button>
         </div>
         <div id="config-sections">Loading...</div>
     "#;
@@ -136,11 +139,12 @@ pub async fn api_config_update(
     State(_ctx): State<AppContext>,
     Json(payload): Json<ConfigUpdateRequest>,
 ) -> Json<serde_json::Value> {
-    // Validate section name
-    if !ALLOWED_SECTIONS.contains(&payload.section.as_str()) {
+    // Validate section name (static list + dynamic threat_intel.feeds.*)
+    let is_feed_section = payload.section.starts_with("threat_intel.feeds.");
+    if !ALLOWED_SECTIONS.contains(&payload.section.as_str()) && !is_feed_section {
         return Json(serde_json::json!({
             "status": "error",
-            "message": format!("Invalid section: '{}'. Allowed: {}", payload.section, ALLOWED_SECTIONS.join(", "))
+            "message": format!("Invalid section: '{}'. Allowed: {}, threat_intel.feeds.*", payload.section, ALLOWED_SECTIONS.join(", "))
         }));
     }
 
@@ -180,21 +184,22 @@ pub async fn api_config_update(
     // Navigate to the correct table using dot-notation
     let section_parts: Vec<&str> = payload.section.split('.').collect();
 
-    // Ensure tables exist
-    for i in 0..section_parts.len() {
-        let key = section_parts[i];
-        if i == 0 {
-            if !doc.contains_key(key) {
-                doc[key] = toml_edit::Item::Table(toml_edit::Table::new());
+    // Ensure tables exist along the path
+    if !section_parts.is_empty() && !doc.contains_key(section_parts[0]) {
+        doc[section_parts[0]] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    if section_parts.len() >= 2 {
+        if let Some(t1) = doc[section_parts[0]].as_table_mut() {
+            if !t1.contains_key(section_parts[1]) {
+                t1[section_parts[1]] = toml_edit::Item::Table(toml_edit::Table::new());
             }
-        } else {
-            // Navigate through nested tables
-            let parent = section_parts[0];
-            if i == 1 {
-                if let Some(parent_table) = doc[parent].as_table_mut() {
-                    if !parent_table.contains_key(key) {
-                        parent_table[key] = toml_edit::Item::Table(toml_edit::Table::new());
-                    }
+        }
+    }
+    if section_parts.len() >= 3 {
+        if let Some(t1) = doc[section_parts[0]].as_table_mut() {
+            if let Some(t2) = t1[section_parts[1]].as_table_mut() {
+                if !t2.contains_key(section_parts[2]) {
+                    t2[section_parts[2]] = toml_edit::Item::Table(toml_edit::Table::new());
                 }
             }
         }
@@ -224,10 +229,13 @@ pub async fn api_config_update(
             2 => {
                 doc[section_parts[0]][section_parts[1]][key.as_str()] = toml_item;
             }
+            3 => {
+                doc[section_parts[0]][section_parts[1]][section_parts[2]][key.as_str()] = toml_item;
+            }
             _ => {
                 return Json(serde_json::json!({
                     "status": "error",
-                    "message": "Section nesting deeper than 2 levels is not supported."
+                    "message": "Section nesting deeper than 3 levels is not supported."
                 }));
             }
         }
@@ -291,7 +299,28 @@ fn json_to_toml_value(val: &serde_json::Value) -> Option<toml_edit::Item> {
             }
             Some(toml_edit::value(toml_arr))
         }
-        // Objects and null not supported
+        serde_json::Value::Object(map) => {
+            let mut table = toml_edit::InlineTable::new();
+            for (k, v) in map {
+                match v {
+                    serde_json::Value::Bool(b) => {
+                        table.insert(k, (*b).into());
+                    }
+                    serde_json::Value::Number(n) => {
+                        if let Some(i) = n.as_i64() {
+                            table.insert(k, i.into());
+                        } else if let Some(f) = n.as_f64() {
+                            table.insert(k, f.into());
+                        }
+                    }
+                    serde_json::Value::String(s) => {
+                        table.insert(k, s.as_str().into());
+                    }
+                    _ => return None,
+                }
+            }
+            Some(toml_edit::value(table))
+        }
         _ => None,
     }
 }
@@ -525,6 +554,32 @@ pub async fn api_discover_domains(State(_ctx): State<AppContext>) -> Json<serde_
     Json(serde_json::json!({
         "domains": domain_list,
         "errors": errors,
+    }))
+}
+
+// ─── Restart endpoint ─────────────────────────────────────────────────────────
+
+/// POST /api/restart — Restart the aegis daemon via systemctl.
+///
+/// Safe because: aegis already runs as root, the WebUI is localhost-only with
+/// token auth, and an attacker with the token can already modify config files.
+/// This just applies changes without requiring SSH access.
+pub async fn api_restart(State(_ctx): State<AppContext>) -> Json<serde_json::Value> {
+    info!("Restart requested via WebUI");
+
+    // Spawn the restart in a background task with a short delay
+    // so the HTTP response can be sent before the process is killed.
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        info!("Executing systemctl restart aegis");
+        let _ = std::process::Command::new("systemctl")
+            .args(["restart", "aegis"])
+            .spawn();
+    });
+
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": "Restarting aegis... The page will reconnect automatically."
     }))
 }
 

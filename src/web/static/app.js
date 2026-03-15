@@ -1333,8 +1333,12 @@ function toggleConfigSection(el) {
 
 // === Editable Config Page ===
 
+var ALL_MODULES = ['network', 'process', 'file_integrity', 'auth', 'web', 'threat_intel', 'anomaly', 'honeypot', 'cert'];
+
+var SCANNER_AGENT_PRESETS = ['nikto', 'sqlmap', 'nmap', 'masscan', 'zgrab', 'gobuster', 'dirbuster', 'wfuzz', 'nuclei', 'httpx', 'dirsearch', 'ffuf', 'burpsuite', 'acunetix', 'w3af', 'arachni'];
+
 var CONFIG_SCHEMA = {
-    general: { modules: 'string_array', log_level: 'string', data_dir: 'string', dedup_ttl: 'string' },
+    general: { modules: 'module_checklist', log_level: 'string', data_dir: 'string', dedup_ttl: 'string' },
     network: { enabled: 'bool', syn_flood_threshold: 'number', port_scan_threshold: 'number',
                port_scan_window: 'number', known_outbound_ports: 'number_array',
                c2_beacon_threshold: 'number', c2_beacon_window: 'number', connection_rate_threshold: 'number' },
@@ -1346,8 +1350,8 @@ var CONFIG_SCHEMA = {
             alert_root_login: 'bool', alert_new_ip: 'bool', log_paths: 'string_array' },
     web: { enabled: 'bool', access_log_paths: 'string_array', ddos_threshold: 'number',
            detect_sqli: 'bool', detect_path_traversal: 'bool', detect_scanners: 'bool',
-           scanner_agents: 'string_array' },
-    threat_intel: 'skip',
+           scanner_agents: 'string_array_suggest' },
+    threat_intel: { enabled: 'bool', feed_dir: 'string', update_on_scan: 'bool', update_interval: 'string', feeds: 'feeds_editor' },
     response: { enabled: 'bool', dry_run: 'bool', max_blocks_per_minute: 'number',
                 default_block_duration: 'string', max_firewall_rules: 'number',
                 firewall_backend: 'string', whitelist: 'skip' },
@@ -1517,7 +1521,11 @@ function renderEditableSection(sectionKey, schema, data) {
         var inputWrap = document.createElement('div');
         inputWrap.className = 'config-edit-input';
 
-        if (fieldType === 'bool' || fieldType === 'module_toggle') {
+        if (fieldType === 'module_checklist') {
+            inputWrap.appendChild(createModuleChecklist(sectionKey, key, Array.isArray(value) ? value : []));
+        } else if (fieldType === 'feeds_editor') {
+            // Feeds editor is rendered after the normal fields
+        } else if (fieldType === 'bool' || fieldType === 'module_toggle') {
             inputWrap.appendChild(createToggle(sectionKey, key, fieldType, !!value));
         } else if (fieldType === 'number') {
             var input = document.createElement('input');
@@ -1543,11 +1551,30 @@ function renderEditableSection(sectionKey, schema, data) {
             inputWrap.appendChild(input);
         } else if (fieldType === 'string_array' || fieldType === 'number_array') {
             inputWrap.appendChild(createTagInput(sectionKey, key, fieldType, Array.isArray(value) ? value : []));
+        } else if (fieldType === 'string_array_suggest') {
+            inputWrap.appendChild(createTagInputWithSuggest(sectionKey, key, Array.isArray(value) ? value : [], SCANNER_AGENT_PRESETS));
         }
 
         row.appendChild(inputWrap);
         body.appendChild(row);
     });
+
+    // Feeds editor for threat_intel
+    if (sectionKey === 'threat_intel' && data.feeds && typeof data.feeds === 'object') {
+        var feedsDiv = document.createElement('div');
+        feedsDiv.id = 'feeds-editor';
+        feedsDiv.style.marginTop = '12px';
+
+        var feedsTitle = document.createElement('div');
+        feedsTitle.style.cssText = 'font-weight:600;font-size:13px;color:var(--text-primary);margin-bottom:8px;border-bottom:1px solid var(--border-primary);padding-bottom:4px';
+        feedsTitle.textContent = 'Threat Intelligence Feeds';
+        feedsDiv.appendChild(feedsTitle);
+
+        for (var feedName in data.feeds) {
+            feedsDiv.appendChild(createFeedCard(feedName, data.feeds[feedName]));
+        }
+        body.appendChild(feedsDiv);
+    }
 
     // Discovery buttons
     if (sectionKey === 'honeypot') {
@@ -1654,11 +1681,20 @@ function saveConfigSection(sectionKey, schema) {
     var updates = {};
     Object.keys(schema).forEach(function(key) {
         var fieldType = schema[key];
-        if (fieldType === 'skip') return;
+        if (fieldType === 'skip' || fieldType === 'feeds_editor') return;
 
         var elId = 'cfg-' + sectionKey.replace('.', '-') + '-' + key;
 
-        if (fieldType === 'bool' || fieldType === 'module_toggle') {
+        if (fieldType === 'module_checklist') {
+            var container = document.getElementById('module-checklist');
+            if (container) {
+                var selected = [];
+                container.querySelectorAll('input[type="checkbox"]:checked').forEach(function(cb) {
+                    selected.push(cb.value);
+                });
+                updates[key] = selected;
+            }
+        } else if (fieldType === 'bool' || fieldType === 'module_toggle') {
             var el = document.getElementById(elId);
             if (el) updates[key] = el.checked;
         } else if (fieldType === 'number') {
@@ -1670,7 +1706,7 @@ function saveConfigSection(sectionKey, schema) {
         } else if (fieldType === 'secret') {
             var el = document.getElementById(elId);
             if (el) updates[key] = el.value;
-        } else if (fieldType === 'string_array') {
+        } else if (fieldType === 'string_array' || fieldType === 'string_array_suggest') {
             var tc = document.getElementById('tags-' + sectionKey.replace('.', '-') + '-' + key);
             if (tc) updates[key] = getTagValues(tc);
         } else if (fieldType === 'number_array') {
@@ -1900,6 +1936,229 @@ function applyDiscoveredDomains(domains) {
             addTag(tagContainer, domain);
         }
     });
+}
+
+// === Module checklist (for general.modules) ===
+function createModuleChecklist(sectionKey, key, selected) {
+    var container = document.createElement('div');
+    container.className = 'module-checklist';
+    container.id = 'module-checklist';
+
+    ALL_MODULES.forEach(function(mod) {
+        var label = document.createElement('label');
+        label.className = 'checklist-item';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = mod;
+        cb.checked = selected.indexOf(mod) >= 0;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(' ' + mod.replace(/_/g, ' ')));
+        container.appendChild(label);
+    });
+    return container;
+}
+
+// === Tag input with suggestion dropdown ===
+function createTagInputWithSuggest(sectionKey, key, values, presets) {
+    var outer = document.createElement('div');
+
+    var tagContainer = createTagInput(sectionKey, key, 'string_array', values);
+    outer.appendChild(tagContainer);
+
+    // Suggestion buttons
+    var suggestDiv = document.createElement('div');
+    suggestDiv.className = 'tag-suggestions';
+    var suggestLabel = document.createElement('span');
+    suggestLabel.textContent = 'Add: ';
+    suggestLabel.style.cssText = 'font-size:11px;color:var(--text-muted)';
+    suggestDiv.appendChild(suggestLabel);
+
+    presets.forEach(function(preset) {
+        var btn = document.createElement('button');
+        btn.className = 'tag-suggest-btn';
+        btn.textContent = preset;
+        btn.onclick = function() {
+            var existing = getTagValues(tagContainer);
+            if (existing.indexOf(preset) === -1) {
+                addTag(tagContainer, preset);
+            }
+        };
+        suggestDiv.appendChild(btn);
+    });
+    outer.appendChild(suggestDiv);
+    return outer;
+}
+
+// === Feed card for threat_intel feeds ===
+function createFeedCard(feedName, feedData) {
+    var card = document.createElement('div');
+    card.className = 'feed-card';
+    card.id = 'feed-card-' + feedName;
+
+    var header = document.createElement('div');
+    header.className = 'feed-card-header';
+    header.onclick = function() { card.classList.toggle('open'); };
+
+    var nameSpan = document.createElement('span');
+    nameSpan.className = 'feed-card-name';
+    nameSpan.textContent = feedName;
+    header.appendChild(nameSpan);
+
+    var toggleWrap = document.createElement('label');
+    toggleWrap.className = 'toggle-switch';
+    toggleWrap.onclick = function(e) { e.stopPropagation(); };
+    var toggleCb = document.createElement('input');
+    toggleCb.type = 'checkbox';
+    toggleCb.checked = !!feedData.enabled;
+    toggleCb.id = 'feed-enabled-' + feedName;
+    toggleWrap.appendChild(toggleCb);
+    var slider = document.createElement('span');
+    slider.className = 'toggle-slider';
+    toggleWrap.appendChild(slider);
+    header.appendChild(toggleWrap);
+
+    card.appendChild(header);
+
+    var body = document.createElement('div');
+    body.className = 'feed-card-body';
+
+    // URL field
+    var urlRow = document.createElement('div');
+    urlRow.className = 'config-edit-row';
+    var urlLabel = document.createElement('label');
+    urlLabel.className = 'config-edit-label';
+    urlLabel.textContent = 'url';
+    urlRow.appendChild(urlLabel);
+    var urlWrap = document.createElement('div');
+    urlWrap.className = 'config-edit-input';
+    var urlInput = document.createElement('input');
+    urlInput.type = 'text';
+    urlInput.className = 'cfg-input';
+    urlInput.id = 'feed-url-' + feedName;
+    urlInput.value = feedData.url || '';
+    urlInput.style.maxWidth = '100%';
+    urlWrap.appendChild(urlInput);
+    urlRow.appendChild(urlWrap);
+    body.appendChild(urlRow);
+
+    // Weight field
+    var weightRow = document.createElement('div');
+    weightRow.className = 'config-edit-row';
+    var weightLabel = document.createElement('label');
+    weightLabel.className = 'config-edit-label';
+    weightLabel.textContent = 'weight (0-100)';
+    weightRow.appendChild(weightLabel);
+    var weightWrap = document.createElement('div');
+    weightWrap.className = 'config-edit-input';
+    var weightInput = document.createElement('input');
+    weightInput.type = 'number';
+    weightInput.className = 'cfg-input';
+    weightInput.id = 'feed-weight-' + feedName;
+    weightInput.value = feedData.weight != null ? feedData.weight : 50;
+    weightInput.min = '0';
+    weightInput.max = '100';
+    weightWrap.appendChild(weightInput);
+    weightRow.appendChild(weightWrap);
+    body.appendChild(weightRow);
+
+    // Feedback
+    var feedback = document.createElement('div');
+    feedback.className = 'config-feedback';
+    feedback.id = 'feed-feedback-' + feedName;
+    body.appendChild(feedback);
+
+    // Save feed button
+    var saveBtn = document.createElement('button');
+    saveBtn.className = 'btn-save-section';
+    saveBtn.style.marginTop = '8px';
+    saveBtn.textContent = 'Save Feed';
+    saveBtn.onclick = function() { saveFeed(feedName); };
+    body.appendChild(saveBtn);
+
+    card.appendChild(body);
+    return card;
+}
+
+function saveFeed(feedName) {
+    var enabledEl = document.getElementById('feed-enabled-' + feedName);
+    var urlEl = document.getElementById('feed-url-' + feedName);
+    var weightEl = document.getElementById('feed-weight-' + feedName);
+    var feedback = document.getElementById('feed-feedback-' + feedName);
+
+    var updates = {};
+    if (enabledEl) updates.enabled = enabledEl.checked;
+    if (urlEl) updates.url = urlEl.value;
+    if (weightEl && weightEl.value !== '') updates.weight = Number(weightEl.value);
+
+    if (feedback) {
+        feedback.textContent = 'Saving...';
+        feedback.className = 'config-feedback';
+    }
+
+    fetch('/api/config?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ section: 'threat_intel.feeds.' + feedName, updates: updates })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (!feedback) return;
+        if (data.status === 'ok') {
+            feedback.textContent = 'Saved. Restart aegis to apply.';
+            feedback.className = 'config-feedback config-feedback-ok';
+        } else {
+            feedback.textContent = 'Error: ' + (data.message || 'Unknown error');
+            feedback.className = 'config-feedback config-feedback-err';
+        }
+    })
+    .catch(function(err) {
+        if (feedback) {
+            feedback.textContent = 'Error: ' + err;
+            feedback.className = 'config-feedback config-feedback-err';
+        }
+    });
+}
+
+// === Restart aegis ===
+function restartAegis() {
+    showConfirm('Restart Aegis',
+        'This will restart the aegis daemon to apply configuration changes. The page will briefly disconnect.',
+        function() {
+            showModal('Restarting', '', '');
+            var modalBody = document.getElementById('modal-body');
+            var p = document.createElement('p');
+            p.textContent = 'Sending restart signal...';
+            modalBody.textContent = '';
+            modalBody.appendChild(p);
+
+            fetch('/api/restart?token=' + API_TOKEN, { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function() {
+                    p.textContent = 'Restarting... reconnecting in a few seconds.';
+                    // Poll for reconnection
+                    var attempts = 0;
+                    var poll = setInterval(function() {
+                        attempts++;
+                        fetch('/health')
+                            .then(function(r) {
+                                if (r.ok) {
+                                    clearInterval(poll);
+                                    showResult('Restarted', 'Aegis has restarted successfully. Reloading page...', false);
+                                    setTimeout(function() { location.reload(); }, 1500);
+                                }
+                            })
+                            .catch(function() {});
+                        if (attempts > 30) {
+                            clearInterval(poll);
+                            showResult('Restart Timeout', 'Could not reconnect. Check aegis status manually.', true);
+                        }
+                    }, 2000);
+                })
+                .catch(function(err) {
+                    showResult('Restart Failed', 'Error: ' + err, true);
+                });
+        }
+    );
 }
 
 // Auto-init config page

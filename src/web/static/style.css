@@ -206,6 +206,29 @@ button:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 2p
 .config-feedback-warn { color: var(--accent-gold); }
 .config-feedback-err { color: var(--accent-red); }
 
+/* Restart button */
+.btn-restart { background: var(--border-secondary); color: var(--accent-gold); border: 1px solid var(--accent-gold); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.btn-restart:hover { background: var(--accent-gold); color: var(--bg-primary); }
+
+/* Module checklist */
+.module-checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px; }
+.checklist-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); cursor: pointer; padding: 3px 6px; border-radius: 4px; }
+.checklist-item:hover { background: var(--bg-hover); }
+.checklist-item input[type="checkbox"] { accent-color: var(--accent-blue); }
+
+/* Tag suggestions */
+.tag-suggestions { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.tag-suggest-btn { background: var(--bg-tertiary); color: var(--text-muted); border: 1px solid var(--border-primary); border-radius: 4px; padding: 1px 8px; font-size: 11px; cursor: pointer; margin: 0; }
+.tag-suggest-btn:hover { background: var(--border-primary); color: var(--text-secondary); }
+
+/* Feed cards */
+.feed-card { background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 6px; margin-bottom: 8px; }
+.feed-card-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; cursor: pointer; }
+.feed-card-header:hover { background: var(--bg-hover); }
+.feed-card-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.feed-card-body { display: none; padding: 8px 12px; border-top: 1px solid var(--border-secondary); }
+.feed-card.open .feed-card-body { display: block; }
+
 /* Mobile responsive */
 .hamburger { display: none; background: none; border: none; color: var(--text-primary); font-size: 24px; cursor: pointer; padding: 4px 8px; margin: 0; }
 .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 99; }
