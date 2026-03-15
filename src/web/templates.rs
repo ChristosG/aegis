@@ -40,7 +40,7 @@ fn page_wrapper(title: &str, content: &str, token: &str) -> String {
     )
 }
 
-pub fn render_dashboard(state: &AppState) -> String {
+pub fn render_dashboard(state: &AppState, token: &str) -> String {
     let counts = state.threat_counts();
     let critical = counts.get(&ThreatSeverity::Critical).copied().unwrap_or(0);
     let high = counts.get(&ThreatSeverity::High).copied().unwrap_or(0);
@@ -141,12 +141,10 @@ pub fn render_dashboard(state: &AppState) -> String {
         recent_threats = recent_threats,
     );
 
-    // We don't have access to the token here, use empty string
-    // The token will be injected by the route handler
-    page_wrapper("Dashboard", &content, "")
+    page_wrapper("Dashboard", &content, token)
 }
 
-pub fn render_threats_page(state: &AppState) -> String {
+pub fn render_threats_page(state: &AppState, token: &str) -> String {
     let rows: String = state
         .threats
         .iter()
@@ -205,7 +203,7 @@ pub fn render_threats_page(state: &AppState) -> String {
         rows = rows,
     );
 
-    page_wrapper("Threats", &content, "")
+    page_wrapper("Threats", &content, token)
 }
 
 fn severity_class(sev: ThreatSeverity) -> &'static str {

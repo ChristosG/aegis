@@ -108,13 +108,15 @@ if [ "$VARIANT" = "full" ]; then
     fi
 fi
 
-# --- Reload systemd if running ---
-if command -v systemctl &>/dev/null && systemctl is-system-running &>/dev/null 2>&1; then
-    systemctl daemon-reload
-    info "Systemd units reloaded"
+# --- Reload systemd and restart service ---
+if command -v systemctl &>/dev/null; then
+    systemctl daemon-reload 2>/dev/null && info "Systemd units reloaded"
     if systemctl is-active --quiet aegis 2>/dev/null; then
         systemctl restart aegis
         info "Aegis service restarted"
+    elif systemctl is-enabled --quiet aegis 2>/dev/null; then
+        systemctl start aegis
+        info "Aegis service started"
     fi
 fi
 
