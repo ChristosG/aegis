@@ -81,7 +81,11 @@ pub async fn api_whitelist_remove(
     // Update runtime config
     {
         let mut state = ctx.state.write().await;
-        state.config.response.whitelist.retain(|c| c != &cidr_decoded);
+        state
+            .config
+            .response
+            .whitelist
+            .retain(|c| c != &cidr_decoded);
     }
 
     Ok(Json(serde_json::json!({

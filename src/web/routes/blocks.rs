@@ -31,12 +31,13 @@ pub async fn api_block(
         )
     })?;
     let duration_str = req.duration.as_deref().unwrap_or("24h");
-    let duration = crate::core::scheduler::Scheduler::parse_duration(duration_str).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"status": "error", "message": "Invalid duration format"})),
-        )
-    })?;
+    let duration =
+        crate::core::scheduler::Scheduler::parse_duration(duration_str).map_err(|_| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "message": "Invalid duration format"})),
+            )
+        })?;
 
     let expires_at = Some(
         chrono::Utc::now()

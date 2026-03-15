@@ -56,7 +56,7 @@ button:hover { background: #2ea043; }
 
 /* Modal */
 .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; justify-content: center; align-items: center; }
-.modal { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 90%; max-width: 600px; max-height: 80vh; display: flex; flex-direction: column; animation: fadeIn 0.2s; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 12px; width: 90%; max-width: 900px; max-height: 80vh; display: flex; flex-direction: column; animation: fadeIn 0.2s; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid #30363d; }
 .modal-header h3 { font-size: 16px; color: #f0f6fc; }
 .modal-close { background: none; border: none; color: #8b949e; font-size: 22px; cursor: pointer; padding: 0; margin: 0; line-height: 1; }
@@ -86,6 +86,11 @@ button:hover { background: #2ea043; }
 .fw-input-wide { width: 260px; }
 .row-expired td { opacity: 0.45; }
 .section-count { font-size: 12px; color: #8b949e; font-weight: 400; margin-left: 6px; }
+
+/* File integrity toggle */
+.btn-toggle { background: #21262d; color: #8b949e; border: 1px solid #30363d; padding: 6px 14px; border-radius: 6px; font-size: 12px; margin-left: 12px; vertical-align: middle; }
+.btn-toggle:hover { background: #30363d; color: #c9d1d9; }
+.btn-toggle.active { background: #1c2128; border-color: #58a6ff; color: #58a6ff; }
 
 /* Description tooltips */
 .has-tooltip { position: relative; cursor: default; }

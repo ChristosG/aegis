@@ -153,6 +153,8 @@ pub struct FileIntegrityConfig {
     pub baseline_path: String,
     /// Use inotify for real-time monitoring in daemon mode.
     pub use_inotify: bool,
+    /// Days before auto-accepting detected changes into baseline (0 = disabled).
+    pub auto_accept_days: u64,
 }
 
 impl Default for FileIntegrityConfig {
@@ -174,6 +176,7 @@ impl Default for FileIntegrityConfig {
             ],
             baseline_path: "~/.aegis/baseline.json".into(),
             use_inotify: true,
+            auto_accept_days: 3,
         }
     }
 }

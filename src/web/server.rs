@@ -80,6 +80,10 @@ pub async fn start_server(
         .route("/api/report", get(routes::report::api_report))
         .route("/report.pdf", get(routes::report::download_pdf))
         .route("/ws/threats", get(routes::ws::ws_threats))
+        .route(
+            "/api/baseline/reset",
+            post(routes::baseline::api_baseline_reset),
+        )
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
         .with_state(ctx);
 

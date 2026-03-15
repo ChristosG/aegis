@@ -1,3 +1,4 @@
+pub mod baseline;
 pub mod blocks;
 pub mod config;
 pub mod dashboard;

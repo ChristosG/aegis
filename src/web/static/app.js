@@ -35,6 +35,7 @@ function showResult(title, message, isError) {
 // === Sort & Filter State ===
 var sortState = {}; // keyed by tableId: { col: index, dir: 'asc'|'desc' }
 var currentFilter = null; // severity string or null
+var fileIntegrityHidden = true; // FI threats hidden by default
 
 var SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 
@@ -116,13 +117,31 @@ function applyFilter() {
     tbodies.forEach(function(tbody) {
         var rows = tbody.querySelectorAll('tr');
         rows.forEach(function(row) {
-            if (!currentFilter || row.getAttribute('data-severity') === currentFilter) {
+            var sevMatch = !currentFilter || row.getAttribute('data-severity') === currentFilter;
+            var threatType = row.getAttribute('data-threat-type') || '';
+            var fiMatch = !fileIntegrityHidden || !threatType.startsWith('file_');
+            if (sevMatch && fiMatch) {
                 row.style.display = '';
             } else {
                 row.style.display = 'none';
             }
         });
     });
+}
+
+function toggleFileIntegrity() {
+    fileIntegrityHidden = !fileIntegrityHidden;
+    var btns = document.querySelectorAll('.btn-toggle');
+    btns.forEach(function(btn) {
+        if (fileIntegrityHidden) {
+            btn.classList.add('active');
+            btn.textContent = 'Show File Integrity';
+        } else {
+            btn.classList.remove('active');
+            btn.textContent = 'Hide File Integrity';
+        }
+    });
+    applyFilter();
 }
 
 function updateFilterBar() {
@@ -205,6 +224,10 @@ function updateFilterButtons() {
     var hasDashboard = !!document.querySelector('[data-stat="total-threats"]');
     var hasThreatsPage = !!document.getElementById('threats-table-body');
     var hasFirewallPage = !!document.getElementById('blocks-table-body');
+
+    // Apply FI filter on page load to hide file integrity rows by default
+    if (hasDashboard || hasThreatsPage) applyFilter();
+
     if (!hasDashboard && !hasThreatsPage && !hasFirewallPage) return;
 
     setInterval(function() {
@@ -223,13 +246,13 @@ function refreshThreatTable() {
 
             var dashTbody = document.getElementById('recent-threats-body');
             if (dashTbody) {
-                var dashThreats = data.threats.slice(0, 30);
+                var dashThreats = data.threats.slice(-30).reverse();
                 rebuildTbody(dashTbody, dashThreats, buildDashboardRow);
             }
 
             var fullTbody = document.getElementById('threats-table-body');
             if (fullTbody) {
-                rebuildTbody(fullTbody, data.threats, buildThreatsPageRow);
+                rebuildTbody(fullTbody, data.threats.slice().reverse(), buildThreatsPageRow);
             }
 
             // Re-apply current sort and filter
@@ -264,6 +287,7 @@ function buildDashboardRow(t) {
 
     var tr = document.createElement('tr');
     tr.setAttribute('data-severity', sev);
+    tr.setAttribute('data-threat-type', t.threat_type || '');
 
     var tdSev = document.createElement('td');
     tdSev.className = 'sev-' + sev;
@@ -300,6 +324,7 @@ function buildThreatsPageRow(t) {
 
     var tr = document.createElement('tr');
     tr.setAttribute('data-severity', sev);
+    tr.setAttribute('data-threat-type', t.threat_type || '');
 
     var tdSev = document.createElement('td');
     tdSev.className = 'sev-' + sev;
@@ -534,6 +559,28 @@ function unblockIp(ip) {
             showResult('Unblock Failed', 'Error: ' + err, true);
         });
     });
+}
+
+// === Baseline Reset ===
+function resetBaseline() {
+    showConfirm('Reset Baseline',
+        'This will reset the file integrity baseline. All current files will be accepted as normal. Continue?',
+        function() {
+            showModal('Resetting Baseline', '<p>Deleting baseline and pending changes...</p>', '');
+            fetch('/api/baseline/reset?token=' + API_TOKEN, { method: 'POST' })
+                .then(function(r) { return r.json(); })
+                .then(function(data) {
+                    if (data.status === 'ok' || data.status === 'partial') {
+                        showResult('Baseline Reset', data.message, data.status === 'partial');
+                    } else {
+                        showResult('Reset Failed', data.message || 'Unknown error', true);
+                    }
+                })
+                .catch(function(err) {
+                    showResult('Reset Failed', 'Error: ' + err, true);
+                });
+        }
+    );
 }
 
 // === Firewall Page ===

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask};
 use tracing::{debug, info, warn};
 
@@ -222,6 +223,127 @@ impl FileIntegrityModule {
         }
     }
 
+    /// Path to the pending changes file (fi_pending.json), derived from baseline path.
+    fn pending_path(&self) -> PathBuf {
+        let baseline = resolve_path(&self.config.baseline_path);
+        baseline
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("fi_pending.json")
+    }
+
+    /// Load the pending-changes map from disk.
+    fn load_pending(&self) -> HashMap<String, DateTime<Utc>> {
+        let path = self.pending_path();
+        match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
+    /// Save the pending-changes map to disk.
+    fn save_pending(&self, pending: &HashMap<String, DateTime<Utc>>) {
+        let path = self.pending_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match serde_json::to_string_pretty(pending) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    warn!(error = %e, "Failed to write fi_pending.json");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to serialize pending changes"),
+        }
+    }
+
+    /// Save the baseline map to disk.
+    fn save_baseline(&self, baseline: &HashMap<PathBuf, String>) {
+        let path = resolve_path(&self.config.baseline_path);
+        match serde_json::to_string_pretty(baseline) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    warn!(error = %e, "Failed to write baseline");
+                }
+            }
+            Err(e) => warn!(error = %e, "Failed to serialize baseline"),
+        }
+    }
+
+    /// Process raw threats through the auto-accept pipeline.
+    /// Returns only the threats that should actually be reported.
+    fn apply_auto_accept(
+        &self,
+        threats: Vec<ThreatEvent>,
+        baseline: &mut HashMap<PathBuf, String>,
+    ) -> Vec<ThreatEvent> {
+        if self.config.auto_accept_days == 0 {
+            return threats;
+        }
+
+        let mut pending = self.load_pending();
+        let now = Utc::now();
+        let accept_duration = chrono::Duration::days(self.config.auto_accept_days as i64);
+        let mut kept_threats = Vec::new();
+        let mut baseline_changed = false;
+
+        // Collect the set of paths that still have issues this scan
+        let mut active_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for threat in threats {
+            let path_key = threat.target.clone().unwrap_or_default();
+
+            if path_key.is_empty() {
+                kept_threats.push(threat);
+                continue;
+            }
+
+            active_paths.insert(path_key.clone());
+
+            if let Some(&first_seen) = pending.get(&path_key) {
+                if now.signed_duration_since(first_seen) >= accept_duration {
+                    // Auto-accept: update baseline and suppress threat
+                    let file_path = PathBuf::from(&path_key);
+                    match threat.threat_type {
+                        ThreatType::FileAdded | ThreatType::FileModified => {
+                            if let Ok(hash) = sha256_file(&file_path) {
+                                baseline.insert(file_path, hash);
+                                baseline_changed = true;
+                            }
+                        }
+                        ThreatType::FileDeleted => {
+                            baseline.remove(&file_path);
+                            baseline_changed = true;
+                        }
+                        _ => {
+                            kept_threats.push(threat);
+                            continue;
+                        }
+                    }
+                    pending.remove(&path_key);
+                    info!(path = %path_key, "Auto-accepted file change into baseline");
+                } else {
+                    // Still in probation period — report the threat
+                    kept_threats.push(threat);
+                }
+            } else {
+                // First time seeing this change — add to pending and report
+                pending.insert(path_key, now);
+                kept_threats.push(threat);
+            }
+        }
+
+        // Clean up pending entries for paths that no longer have issues
+        pending.retain(|path, _| active_paths.contains(path));
+
+        self.save_pending(&pending);
+        if baseline_changed {
+            self.save_baseline(baseline);
+        }
+
+        kept_threats
+    }
+
     /// Check whether a path should be excluded based on exclude_paths config.
     fn is_excluded(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy();
@@ -390,7 +512,7 @@ impl ScanModule for FileIntegrityModule {
             self.config.watch_paths
         );
 
-        let baseline = match self.load_or_create_baseline()? {
+        let mut baseline = match self.load_or_create_baseline()? {
             Some(b) => b,
             None => {
                 // First run: baseline was just created, nothing to compare yet.
@@ -405,6 +527,9 @@ impl ScanModule for FileIntegrityModule {
 
         // Check for new files not in the baseline
         threats.extend(self.check_for_new_files(&baseline));
+
+        // Apply auto-accept logic to suppress stale file integrity alerts
+        let threats = self.apply_auto_accept(threats, &mut baseline);
 
         info!(count = threats.len(), "File integrity scan complete");
         Ok(threats)

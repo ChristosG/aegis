@@ -75,10 +75,13 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
         .map(|t| {
             let sev_class = severity_class(t.severity);
             let sev_lower = format!("{}", t.severity).to_lowercase();
+            let threat_type_snake = format!("{}", t.threat_type)
+                .to_lowercase()
+                .replace(' ', "_");
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
             let full_desc = html_escape(&t.description);
             format!(
-                r#"<tr data-severity="{sev_lower}">
+                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
                     <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
@@ -86,6 +89,7 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
                     <td>{time}</td>
                 </tr>"#,
                 sev_lower = sev_lower,
+                threat_type_snake = threat_type_snake,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
@@ -134,7 +138,8 @@ pub fn render_dashboard(state: &AppState, token: &str) -> String {
             <button onclick="exportReport()">Export Report</button>
         </div>
         <div class="section">
-            <h3>Recent Threats</h3>
+            <h3 style="display:inline">Recent Threats</h3>
+            <button class="btn-toggle active" id="fi-toggle-dash" onclick="toggleFileIntegrity()">Show File Integrity</button>
             <div id="live-threats"></div>
             <div id="filter-bar" class="filter-bar" style="display:none"></div>
             <table class="threats-table" id="dashboard-threats-table">
@@ -175,11 +180,14 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
         .map(|t| {
             let sev_class = severity_class(t.severity);
             let sev_lower = format!("{}", t.severity).to_lowercase();
+            let threat_type_snake = format!("{}", t.threat_type)
+                .to_lowercase()
+                .replace(' ', "_");
             let ip = t.source_ip.map_or("N/A".to_string(), |ip| ip.to_string());
             let responded = if t.auto_responded { "Yes" } else { "No" };
             let full_desc = html_escape(&t.description);
             format!(
-                r#"<tr data-severity="{sev_lower}">
+                r#"<tr data-severity="{sev_lower}" data-threat-type="{threat_type_snake}">
                     <td class="{sev_class}">{severity}</td>
                     <td>{threat_type}</td>
                     <td class="has-tooltip" data-tooltip="{full_desc}">{description}</td>
@@ -192,6 +200,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                     </td>
                 </tr>"#,
                 sev_lower = sev_lower,
+                threat_type_snake = threat_type_snake,
                 sev_class = sev_class,
                 severity = t.severity,
                 threat_type = t.threat_type,
@@ -233,6 +242,9 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
                 <div class="sev-row sev-filter-btn" data-filter-sev="info" onclick="filterBySeverity('info')"><span class="sev-label info">Info</span><span class="sev-count">{info_count}</span></div>
             </div>
         </div>
+        <div style="margin-bottom:12px">
+            <button class="btn-toggle active" id="fi-toggle-threats" onclick="toggleFileIntegrity()">Show File Integrity</button>
+        </div>
         <div id="filter-bar" class="filter-bar" style="display:none"></div>
         <table class="threats-table" id="threats-page-table">
             <thead>
@@ -266,13 +278,15 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
         .blocked_ips
         .values()
         .map(|b| {
-            let expired = b
-                .expires_at
-                .is_some_and(|exp| exp < chrono::Utc::now());
-            let expires_str = b
-                .expires_at
-                .map_or("Never".to_string(), |exp| exp.format("%Y-%m-%d %H:%M:%S").to_string());
-            let row_class = if expired { r#" class="row-expired""# } else { "" };
+            let expired = b.expires_at.is_some_and(|exp| exp < chrono::Utc::now());
+            let expires_str = b.expires_at.map_or("Never".to_string(), |exp| {
+                exp.format("%Y-%m-%d %H:%M:%S").to_string()
+            });
+            let row_class = if expired {
+                r#" class="row-expired""#
+            } else {
+                ""
+            };
             let expired_tag = if expired { " (expired)" } else { "" };
             let auto_str = if b.auto { "Yes" } else { "No" };
             format!(
@@ -337,6 +351,11 @@ pub fn render_firewall_page(state: &AppState, token: &str) -> String {
                 </thead>
                 <tbody id="blocks-table-body">{block_rows}</tbody>
             </table>
+        </div>
+        <div class="section">
+            <h3>File Integrity</h3>
+            <p style="color:#8b949e;font-size:13px;margin-bottom:12px">Reset the file integrity baseline to accept all current files as the new normal. The next scan will establish a fresh baseline.</p>
+            <button onclick="resetBaseline()">Reset Baseline</button>
         </div>
         <div class="section">
             <h3>Add to Whitelist</h3>
