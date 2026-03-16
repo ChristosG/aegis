@@ -1,8 +1,8 @@
 Package: aegis
-Version: 0.12.1-1
+Version: 0.13.0-1
 Architecture: arm64
 Maintainer: ChristosG
-Installed-Size: 8224
+Installed-Size: 8289
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis-full
@@ -10,21 +10,21 @@ Replaces: aegis-full
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis/aegis_0.12.1-1_arm64.deb
-Size: 2944144
-SHA256: f7a38630f160342320c428207f2f2252ad86adb82125a6548ca13b665217f64a
-SHA1: 60025667c5b0622f8c3105903574dfdcfe0bc698
-MD5sum: 93309d72df02564be9378751850e200f
+Filename: pool/main/a/aegis/aegis_0.13.0-1_arm64.deb
+Size: 2949748
+SHA256: 2e2525cf2c8e79d4af9094b4c0953eb6bd4ac9783e3c3e141dcdf69c3e7898df
+SHA1: 05d2807d85e9b3c2da4ffa83bb0d3c2804130fed
+MD5sum: 1d4a1b0348117f2df4f67fde694dcb36
 Description: Linux Security Monitoring & Response Tool
  Aegis monitors your Linux server for network attacks, malware, brute-force
  attempts, file tampering, web exploits, and known-malicious IPs, then
  automatically blocks them. Single static binary.
 
 Package: aegis-full
-Version: 0.12.1-1
+Version: 0.13.0-1
 Architecture: arm64
 Maintainer: ChristosG
-Installed-Size: 9762
+Installed-Size: 9826
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis
@@ -32,11 +32,11 @@ Replaces: aegis
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis-full/aegis-full_0.12.1-1_arm64.deb
-Size: 3308796
-SHA256: cfade2c88de7bb641c3b457fd1c7e00ff9d76883933b17b04601ce8ecc973c2e
-SHA1: bc02662265a81ec3523cb99a6bcd05d01af4db89
-MD5sum: a05abc7b725e9e424af36602daf04cbd
+Filename: pool/main/a/aegis-full/aegis-full_0.13.0-1_arm64.deb
+Size: 3332816
+SHA256: 4c8256592c9509dc93d5e62de315a558e3177f5cfb746c4e05d81ac863afa58e
+SHA1: 434191f92ba5304b4a81567542edbacaa94c8f90
+MD5sum: a4f83ddb1c35bf81ec2786b2732f8e02
 Description: Linux Security Monitoring & Response Tool
  Aegis with web dashboard. Monitors your Linux server for network attacks,
  malware, brute-force attempts, file tampering, web exploits, and
