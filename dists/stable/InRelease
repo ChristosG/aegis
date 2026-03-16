@@ -4,44 +4,44 @@ Hash: SHA512
 Origin: Aegis
 Label: Aegis
 Codename: stable
-Date: Sun, 15 Mar 2026 23:47:03 UTC
+Date: Mon, 16 Mar 2026 00:06:56 UTC
 Architectures: amd64 arm64
 Components: main
 Description: Aegis Linux Security Monitoring
 MD5Sum:
- 05f2191fc3e01a16b8a771e764f903c0 1462 main/binary-amd64/Packages
- 03f0081033d3afdb6a3ecc39b0cea536 683 main/binary-amd64/Packages.gz
+ 0c9eb42ec5794091d2196f367ad70c1e 1462 main/binary-amd64/Packages
+ c1aa8ace1e07a7da4452711d41cada9e 683 main/binary-amd64/Packages.gz
  b5286484d798333c0b73d5d804793242 108 main/binary-amd64/Release
- 5bddf6e1b8e1d8a51f5217d672b74bd3 1461 main/binary-arm64/Packages
- eb18b76dd750891520fbf3da5568e8a3 678 main/binary-arm64/Packages.gz
+ dba9cbd2578a6ba135e9631b26aecccb 1461 main/binary-arm64/Packages
+ 3cc540e226c277e380f520380cbee846 683 main/binary-arm64/Packages.gz
  5b293232f7cff94481a676ab015f94c8 108 main/binary-arm64/Release
 SHA1:
- 1d4269ae67d1dc582245d720e18d2dfc720e20a2 1462 main/binary-amd64/Packages
- de15b7b37b0d0de7430bc7266b6c8391a1f0668a 683 main/binary-amd64/Packages.gz
+ bfda53a4fc532820ea4a4d2d10cd12327a648e7f 1462 main/binary-amd64/Packages
+ 647ac4773d7f1b221fce32cb1f4f64b178b14521 683 main/binary-amd64/Packages.gz
  fcd572c70f7646d6a7608ea19254b4d8536e07c3 108 main/binary-amd64/Release
- 329fc69ad230b4eed5dafd6cdb650ae3a593b1ef 1461 main/binary-arm64/Packages
- 56a3d2b53c6a9d10945c4f43eda3c26db48e0475 678 main/binary-arm64/Packages.gz
+ 2a21cc35af7c8d597dfcb00bf22294c6c36926ec 1461 main/binary-arm64/Packages
+ 05cea9a283caaa166eac2624e1c4de29be3fc4a4 683 main/binary-arm64/Packages.gz
  dd399189261790b2ae3ff06fb671ee7374454085 108 main/binary-arm64/Release
 SHA256:
- fb29391a644fd598924b3bc0b93aa25daa3489b2031a60357ea02a11960e4427 1462 main/binary-amd64/Packages
- 252c04d5bd84e25b7b9e87023119340c2aa31dd45ca5a6c608e99c23adbd9c77 683 main/binary-amd64/Packages.gz
+ 2771c2727aba75e313c6896a95501f642d0ab22c828f42cb7d6dda23841709fb 1462 main/binary-amd64/Packages
+ f52e2301cb5b076d4040a80bdf2b732f636dd9c11c1efa6c29ccd6052f2a5a29 683 main/binary-amd64/Packages.gz
  4976b97e66d114b004c8a7a3c5e53eed2d4a81986d6def337177fc287466bd9e 108 main/binary-amd64/Release
- a794fe937bcc56cd30a88eda93a8a09bf0ed27ca2bc7290a259f2a3e19046b5e 1461 main/binary-arm64/Packages
- a74220ed8fbc81abd9a0e99b79ada6459d03e6213ddf67292093ae2852e40044 678 main/binary-arm64/Packages.gz
+ 39ecb820d3879568f9e4f3df82b2c42bae392698ea6da4ea2c902a7d86c33472 1461 main/binary-arm64/Packages
+ e7b829d4aef7b26afdb9cf33c9495eed098253a9bd64a00ebf14bccbf2df4efa 683 main/binary-arm64/Packages.gz
  58fc6a41380227433cd0d3d614eedb7867a07763c528255713c9d6aaa688e644 108 main/binary-arm64/Release
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHse5iA326PzJfVccDUOcOHsezP8FAmm3RPcACgkQDUOcOHse
-zP9RHA/6AopySL6XXJfXYgVqnvx998NZWSZ24J3grK4TtorevGuXdZtNvsaY+eGw
-oBKelq3dl1AtbHCKXDcG3tv453q2c9cGJ2dBCUCwMWp0dgl3vxD8cNie3obx4Uct
-MhrhRw5zjG9iyuG8ZErc5/4aiKOMCbGxXJI8HZskpOPpR6jA0yAFjmCbvnNfTBv9
-oSPdxqtw2lmZGa+xqQ0PcEczEBUc4uCJXOioOfchdtGe27SsqCldhIBKtamnvApB
-NrC7PZnLJu0dpy3BhfRd7eMeMEonKeH+UFrc5yNboEbXJrl1wd7CrVE3iq/z1rNn
-SE388lFEO2MRc15o2jsxEIKyYaPnQdRNfotymCcXfXFsaphasJGTUYmhsTVRAUGh
-Io7N5fFOCHeDAbG0BOH/Z/gH2WHeThHJmxlp1ayf7OhDg1WmKWyaaGY5j8UDkdhu
-ZR6DQlo/Kunc+S8p3E+4bQCk2jURphbldnMEI8ZdkCIRPDnPp42P11Ror8yqejVs
-qyfs9SkBED04VzIfe0d8S/7eAmiAaWekQ8HckZd4DMCsFdrwaaOcF50i3PFUF6sd
-o9Eyi6/fJVPTWUbh6E/Rh/KxCFFbPmTVSbnp67JJ+sQ3VCqa9tW55kJjV7+fGp5/
-gGvX3aUmaLe/04w0AT8QEKxBRVdyRkdaMP30Ze336m1rus+tNZU=
-=cvFI
+iQIzBAEBCgAdFiEEHse5iA326PzJfVccDUOcOHsezP8FAmm3SaEACgkQDUOcOHse
+zP+AiA/8CEOH/Zp2VONsTacPiDAZK36LdzsO15PjFiKPAGHLPxHO7tGDjM2WVXFV
+HEiGLRxgyM3m8g2qyJ3IZ0pq/+sp67gxx6+S8SWU4s7HIhF4nNg4UFW+95ZTiyu3
+v7D72bnEuMpY6QtuYH6PYPXF8XR7CTnJYH/1ASQLK5vjOKlBOUvUSuhvOtUeGTXH
+MAAxgAdbOKEmJGpHMRrVuQHcnJnWa1x80c/GubKB1andq9xuk+8iP+7QsyPhTY5M
+ZD7kyGUil2x1+k9yNTKsYcFzZSfM1azxVX8q5KVvrjct7g8MKEGvnds4wei+AdSO
+eFdpbS3zq3WtkW/RVSszQZJSGnU9N289NYWe/bC3RTH6zh6LLAGt2xkrpH41pGi6
+ynvTiGREj+K4QYtnv7JEcaouKgaQOnQIav5jSPG4geyWcNuEM2azrBSiQ17hOfq8
+Ltz0cHEeY+EL+zX8LZrJGSNhrk9pJaDyx2NaQNWg/T2BARDeYoJ8+hFx7EeVZ3i2
+E7D9g0vBOFSd8AgNKiWiOhrgPzbmTzrstngAAaNJUYTV3DArVnzZsJeHWobSjQMn
+wWzkwfFZ7fK+qo+cWbDG+4CAkI/AC3l2RkrkM9FiaAFeE5jDme8tPtZTiS2xcmUx
+0YI0f3HHhL4nTx5kxFcfY+ZVkFCzqc7+gJEbqVfs1I8uFPAfeFM=
+=gLaY
 -----END PGP SIGNATURE-----
