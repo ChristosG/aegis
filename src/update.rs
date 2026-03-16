@@ -133,11 +133,8 @@ pub async fn run_update(check_only: bool, force: bool) -> Result<()> {
     let bytes = response.bytes().await.context("Failed to read download")?;
 
     // Verify SHA256 checksum if a checksums file is available in the release.
-    let checksum_asset_name = format!("{}-v{}-checksums.sha256", prefix, latest);
-    let checksum_asset = release
-        .assets
-        .iter()
-        .find(|a| a.name == checksum_asset_name);
+    // CI publishes a single SHA256SUMS file covering all release artifacts.
+    let checksum_asset = release.assets.iter().find(|a| a.name == "SHA256SUMS");
     if let Some(cs_asset) = checksum_asset {
         println!("  Verifying SHA256 checksum...");
         match client.get(&cs_asset.browser_download_url).send().await {
