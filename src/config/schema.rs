@@ -40,6 +40,10 @@ fn default_dedup_ttl() -> String {
     "1h".into()
 }
 
+fn default_ddos_high_traffic_threshold() -> u32 {
+    2000
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -232,6 +236,16 @@ pub struct WebConfig {
     pub detect_scanners: bool,
     /// User-agent substrings for scanner detection.
     pub scanner_agents: Vec<String>,
+    /// Path prefixes with higher DDoS thresholds for high-frequency
+    /// legitimate traffic (WebSocket, chat, streaming). Requests matching
+    /// these prefixes use `ddos_high_traffic_threshold` instead of `ddos_threshold`.
+    /// Example: ["/ws/", "/api/v1/chat/"]
+    #[serde(default)]
+    pub ddos_high_traffic_paths: Vec<String>,
+    /// DDoS threshold for high-traffic paths (requests per IP per minute).
+    /// Should be significantly higher than ddos_threshold.
+    #[serde(default = "default_ddos_high_traffic_threshold")]
+    pub ddos_high_traffic_threshold: u32,
 }
 
 impl Default for WebConfig {
@@ -255,6 +269,8 @@ impl Default for WebConfig {
                 "nuclei".into(),
                 "httpx".into(),
             ],
+            ddos_high_traffic_paths: Vec::new(),
+            ddos_high_traffic_threshold: default_ddos_high_traffic_threshold(),
         }
     }
 }

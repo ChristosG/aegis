@@ -327,49 +327,82 @@ impl ScanModule for WebModule {
         }
 
         // --- DDoS Detection ---
-        // Count requests per IP, and estimate requests per minute using timestamps.
+        // Count requests per IP, split into normal vs high-traffic paths.
+        // High-traffic paths (WebSocket, chat, streaming) use a separate,
+        // higher threshold to avoid false positives on legitimate real-time traffic.
+        let ht_paths = &self.config.ddos_high_traffic_paths;
         let mut ip_timestamps: HashMap<String, Vec<i64>> = HashMap::new();
         let mut ip_request_count: HashMap<String, u64> = HashMap::new();
+        let mut ip_ht_count: HashMap<String, u64> = HashMap::new();
 
         for entry in &all_entries {
-            *ip_request_count.entry(entry.ip.clone()).or_insert(0) += 1;
+            let request_path = entry.request.split_whitespace().nth(1).unwrap_or("");
+            let is_ht = !ht_paths.is_empty()
+                && ht_paths
+                    .iter()
+                    .any(|prefix| request_path.starts_with(prefix.as_str()));
+
+            if is_ht {
+                *ip_ht_count.entry(entry.ip.clone()).or_insert(0) += 1;
+            } else {
+                *ip_request_count.entry(entry.ip.clone()).or_insert(0) += 1;
+            }
             if let Some(ts) = parse_nginx_timestamp(&entry.timestamp) {
                 ip_timestamps.entry(entry.ip.clone()).or_default().push(ts);
             }
         }
 
+        // Check normal-path requests against standard threshold
         let ddos_threshold = self.config.ddos_threshold as u64;
-        for (ip_str, count) in &ip_request_count {
+        let ht_threshold = self.config.ddos_high_traffic_threshold as u64;
+
+        // Merge counts: flag if EITHER normal exceeds normal threshold
+        // OR high-traffic exceeds high-traffic threshold.
+        let mut all_ips: std::collections::HashSet<&String> = ip_request_count.keys().collect();
+        all_ips.extend(ip_ht_count.keys());
+
+        for ip_str in &all_ips {
+            let normal_count = ip_request_count.get(*ip_str).copied().unwrap_or(0);
+            let ht_count = ip_ht_count.get(*ip_str).copied().unwrap_or(0);
+            let total_count = normal_count + ht_count;
             let mut flagged = false;
+            let mut effective_threshold = ddos_threshold;
+
+            // Determine which threshold applies
+            if ht_count > normal_count && ht_threshold > 0 {
+                // Mostly high-traffic path requests — use higher threshold
+                effective_threshold = ht_threshold;
+            }
 
             // If we have timestamps, calculate requests per minute more accurately
-            if let Some(timestamps) = ip_timestamps.get(ip_str) {
+            if let Some(timestamps) = ip_timestamps.get(*ip_str) {
                 if timestamps.len() >= 2 {
                     let min_ts = *timestamps.iter().min().unwrap();
                     let max_ts = *timestamps.iter().max().unwrap();
                     let duration_secs = (max_ts - min_ts).max(1);
-                    let rpm = (*count as f64 / duration_secs as f64) * 60.0;
-                    if rpm >= ddos_threshold as f64 {
+                    let rpm = (total_count as f64 / duration_secs as f64) * 60.0;
+                    if rpm >= effective_threshold as f64 {
                         flagged = true;
                     }
                 }
             }
 
             // Fallback: if total count alone exceeds threshold, flag it
-            // (handles case where all timestamps are the same or unparseable)
-            if !flagged && *count >= ddos_threshold {
+            if !flagged && total_count >= effective_threshold {
                 flagged = true;
             }
+
+            let count = &total_count;
 
             if flagged {
                 let description = format!(
                     "Potential DDoS: {} sent {} requests (threshold: {}/min)",
-                    ip_str, count, ddos_threshold
+                    ip_str, count, effective_threshold
                 );
 
                 let mut event = ThreatEvent::new(ThreatType::WebDdos, "web", description)
                     .with_detail("request_count", count.to_string())
-                    .with_detail("threshold", ddos_threshold.to_string());
+                    .with_detail("threshold", effective_threshold.to_string());
 
                 if let Ok(ip) = ip_str.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -406,6 +439,8 @@ mod tests {
             detect_path_traversal: true,
             detect_scanners: true,
             scanner_agents: vec!["nikto".into(), "sqlmap".into(), "nmap".into()],
+            ddos_high_traffic_paths: Vec::new(),
+            ddos_high_traffic_threshold: 2000,
         }
     }
 
