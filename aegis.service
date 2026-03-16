@@ -2,19 +2,22 @@
 Description=Aegis Linux Security Monitor
 After=network.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/aegis watch --foreground
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=30
 User=root
 
 # Security hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/log /root/.aegis /etc/aegis
+ReadWritePaths=/root/.aegis /etc/aegis
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

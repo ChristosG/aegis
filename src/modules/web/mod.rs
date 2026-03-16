@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,11 +16,12 @@ use crate::util::log_cursor::LogCursors;
 /// known vulnerability scanners.
 pub struct WebModule {
     config: WebConfig,
+    data_dir: PathBuf,
 }
 
 impl WebModule {
-    pub fn new(config: WebConfig) -> Self {
-        Self { config }
+    pub fn new(config: WebConfig, data_dir: PathBuf) -> Self {
+        Self { config, data_dir }
     }
 }
 
@@ -195,7 +196,7 @@ impl ScanModule for WebModule {
         let patterns = WebPatterns::compile();
 
         // Load log cursor for incremental reading (only new lines since last scan)
-        let cursor_path = LogCursors::path_for_module("web");
+        let cursor_path = LogCursors::path_for_module("web", &self.data_dir);
         let mut cursors = LogCursors::load(&cursor_path);
 
         // Collect all parsed entries from all log files
@@ -487,7 +488,7 @@ mod tests {
         .unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -506,7 +507,7 @@ mod tests {
         .unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -529,7 +530,7 @@ mod tests {
         .unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -548,7 +549,7 @@ mod tests {
         .unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -573,7 +574,7 @@ mod tests {
         std::fs::write(&log_path, content).unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats.iter().any(|t| t.threat_type == ThreatType::WebDdos));
@@ -595,7 +596,7 @@ mod tests {
         std::fs::write(&log_path, content).unwrap();
 
         let config = test_config(log_path.to_str().unwrap());
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(!threats.iter().any(|t| t.threat_type == ThreatType::WebDdos));
@@ -603,8 +604,9 @@ mod tests {
 
     #[test]
     fn test_missing_log_file_is_handled() {
+        let dir = tempfile::tempdir().unwrap();
         let config = test_config("/nonexistent/path/access.log");
-        let module = WebModule::new(config);
+        let module = WebModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats.is_empty());

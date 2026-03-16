@@ -10,9 +10,22 @@ if [ -n "$2" ]; then
     # Upgrade: merge new config options, restart service
     echo ""
     echo "  Aegis upgraded (${2} -> $(aegis --version 2>/dev/null || echo 'new'))."
-    aegis config-upgrade 2>/dev/null || true
+
+    # Backup config before upgrade merge
+    if [ -f /etc/aegis/aegis.toml ]; then
+        cp /etc/aegis/aegis.toml /etc/aegis/aegis.toml.bak
+    fi
+
+    if ! aegis config-upgrade 2>/dev/null; then
+        echo "  WARN: config-upgrade failed."
+        if [ -f /etc/aegis/aegis.toml.bak ]; then
+            cp /etc/aegis/aegis.toml.bak /etc/aegis/aegis.toml
+            echo "  Restored config from backup."
+        fi
+    fi
+
     if systemctl is-enabled --quiet aegis 2>/dev/null; then
-        systemctl restart aegis
+        systemctl try-restart aegis
         echo "  Service restarted. Blocked IPs and config preserved."
     else
         echo "  Service not enabled. Start with: sudo systemctl enable --now aegis"

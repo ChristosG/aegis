@@ -15,10 +15,11 @@ function closeModal(e) {
 }
 
 function showConfirm(title, message, onConfirm) {
-    showModal(title, '<p>' + message + '</p>',
+    showModal(title, '<p id="modal-confirm-msg"></p>',
         '<button class="btn-modal-cancel" onclick="hideModal()">Cancel</button>' +
         '<button class="btn-modal-confirm" id="modal-confirm-btn">Confirm</button>'
     );
+    document.getElementById('modal-confirm-msg').textContent = message;
     document.getElementById('modal-confirm-btn').onclick = function() {
         hideModal();
         onConfirm();
@@ -27,9 +28,10 @@ function showConfirm(title, message, onConfirm) {
 
 function showResult(title, message, isError) {
     var cls = isError ? 'modal-error' : 'modal-success';
-    showModal(title, '<p class="' + cls + '">' + message + '</p>',
+    showModal(title, '<p class="' + cls + '" id="modal-result-msg"></p>',
         '<button class="btn-modal-cancel" onclick="hideModal()">Close</button>'
     );
+    document.getElementById('modal-result-msg').textContent = message;
 }
 
 // === Keyboard: Escape closes modal ===

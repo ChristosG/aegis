@@ -50,7 +50,8 @@ pub fn generate_default_toml() -> String {
 /// Load and parse an AegisConfig from a TOML file at the given path.
 ///
 /// Missing keys are filled from the Default impl so that old config files
-/// keep working after new options are added.
+/// keep working after new options are added.  After deserialization the
+/// config is validated; warnings are logged but do not prevent loading.
 pub fn load_config(path: &Path) -> Result<AegisConfig> {
     debug!("Loading configuration from {}", path.display());
     let contents = std::fs::read_to_string(path)
@@ -58,6 +59,15 @@ pub fn load_config(path: &Path) -> Result<AegisConfig> {
 
     let config: AegisConfig = toml::from_str(&contents)
         .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+
+    // Validate after loading — log issues but don't fail for backward compat.
+    let validation = super::validate::validate_config(&config);
+    for w in &validation.warnings {
+        warn!("Config warning: {}", w);
+    }
+    for e in &validation.errors {
+        warn!("Config error: {}", e);
+    }
 
     info!("Loaded configuration from {}", path.display());
     Ok(config)
@@ -134,8 +144,13 @@ pub fn merge_default_into(config_path: &Path) -> Result<usize> {
     }
 
     if added > 0 {
-        std::fs::write(config_path, user_doc.to_string())
-            .context("Failed to write merged config")?;
+        // Atomic write: write to temp file then rename, so a crash mid-write
+        // cannot corrupt the config.
+        let tmp_path = config_path.with_extension("toml.tmp");
+        std::fs::write(&tmp_path, user_doc.to_string())
+            .context("Failed to write temp config file")?;
+        std::fs::rename(&tmp_path, config_path)
+            .context("Failed to rename temp config over original")?;
     }
 
     Ok(added)

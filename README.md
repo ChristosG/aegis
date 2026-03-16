@@ -103,6 +103,7 @@ $ sudo aegis scan
   - [File Integrity Baseline](#file-integrity-baseline)
   - [Manual IP Blocking](#manual-ip-blocking)
   - [Security Reports](#security-reports)
+  - [Self-Update](#self-update)
 - [Detection Modules](#detection-modules)
   - [Network Module](#network-module)
   - [Process Module](#process-module)
@@ -127,6 +128,7 @@ $ sudo aegis scan
 - [Web Dashboard](#web-dashboard)
 - [Configuration Reference](#configuration-reference)
 - [Threat Reference](#threat-reference)
+- [Storage & Log Management](#storage--log-management)
 - [Architecture](#architecture)
 - [Security Hardening](#security-hardening)
 - [Deployment](#deployment)
@@ -154,7 +156,8 @@ $ sudo aegis scan
 | **Web Dashboard** | Real-time security dashboard with 6 pages, WebSocket live feed, auto token auth when network-exposed |
 | **Auto-Response** | Blocks IPs via iptables/nftables/ufw, kills malicious processes |
 | **Threat Dedup** | Cross-run deduplication with configurable TTL &mdash; same threat won't re-alert within the window |
-| **JSONL Logging** | All threats persisted to `~/.aegis/threats.jsonl` for history, reports, and `aegis threats` |
+| **JSONL Logging** | All threats persisted to `~/.aegis/threats.jsonl` with automatic rotation (10 MB, 3 old files), streaming reads, and dashboard storage monitoring |
+| **Self-Update** | `aegis update` downloads the latest release from GitHub with SHA-256 checksum verification |
 | **Alerting** | Terminal, JSON log, SMTP email, Slack, Telegram, webhooks |
 | **Connection Rate** | Per-IP connection rate monitoring with configurable threshold |
 | **Outbound Anomaly** | Detects new outbound destinations not in established baseline |
@@ -281,6 +284,19 @@ sudo bash uninstall.sh
 
 This removes the binary, systemd service, firewall rules (AEGIS_BLOCK chain), sysctl hardening, and fail2ban integration.
 
+**APT purge** (complete cleanup):
+```bash
+sudo apt purge aegis-full    # removes binary + ALL config, data, and system modifications
+```
+
+The `.deb` package includes a `postrm` script that on `purge`:
+- Removes `/etc/sysctl.d/99-aegis-hardening.conf` and re-applies sysctl
+- Removes fail2ban filter + jail and reloads
+- Flushes and deletes the AEGIS_BLOCK iptables chain (and nftables aegis table)
+- Removes `/etc/aegis/` and `/root/.aegis/`
+
+On `remove` (without `--purge`), only runtime state is cleaned; config files are preserved.
+
 ### Requirements
 
 - Linux (kernel 3.x+ for `/proc` and inotify support)
@@ -305,7 +321,7 @@ sudo aegis init
 |-------|-------------|
 | 1. Prerequisites | Verifies root, checks for iptables/systemctl/sysctl, auto-installs fail2ban if missing |
 | 2. Config & Data | Creates `/etc/aegis/aegis.toml` (never overwrites), `~/.aegis/`, `~/.aegis/feeds/`, `~/.aegis/quarantine/` |
-| 3. Kernel Hardening | Writes 15 sysctl parameters to `/etc/sysctl.d/99-aegis-hardening.conf` (SYN cookies, rp_filter, ASLR, etc.) |
+| 3. Kernel Hardening | Writes 17 sysctl parameters to `/etc/sysctl.d/99-aegis-hardening.conf` (SYN cookies, rp_filter, ASLR, ptrace restriction, BPF hardening, etc.) |
 | 4. Baseline | Asks whether to enable file integrity monitoring, then generates SHA-256 baseline (skips if one already exists) |
 | 5. Firewall Cleanup | Removes duplicate rules from the `AEGIS_BLOCK` iptables chain, audits INPUT policy |
 | 6. fail2ban | Installs `aegis-threat` filter + jail that reads `threats.jsonl` and bans source IPs (never touches existing jails) |
@@ -330,6 +346,7 @@ sudo aegis init --skip-dashboard           # Skip web dashboard setup
 - Never starts the service automatically (you review config first)
 - Never touches Docker iptables chains
 - All sysctl changes are reversible: delete `/etc/sysctl.d/99-aegis-hardening.conf` and run `sysctl --system`
+- **Conditional init marker** &mdash; the `.init_done` marker is only written if all critical phases (sysctl, firewall, service) succeed. If a critical phase fails, the dashboard will continue showing the "run init" prompt until the issue is fixed
 
 ---
 
@@ -396,7 +413,9 @@ In daemon mode:
 - Threat intel feeds refresh automatically (default: every 6 hours)
 - All detected threats are written to `~/.aegis/threats.jsonl`
 - Auto-response is always active
-- Graceful shutdown on SIGINT/SIGTERM
+- Graceful shutdown on SIGINT/SIGTERM with 5-second per-task timeout (prevents hanging on stuck watchers)
+- In-memory threats capped at 1000 on startup and every 5 minutes (bounded RAM for long-running operation)
+- Threat log reads use streaming I/O &mdash; only the last 1000 events are loaded into memory regardless of log size
 
 ### File Integrity Baseline
 
@@ -463,6 +482,23 @@ aegis threats
 ```
 
 These commands load persisted threat data from the JSONL log, so they show results from previous scans and daemon sessions &mdash; not just the current run.
+
+### Self-Update
+
+Update Aegis to the latest release:
+
+```bash
+sudo aegis update           # Download and install latest version
+sudo aegis update --check   # Check without installing
+```
+
+The update process:
+1. Queries the GitHub Releases API for the latest version
+2. Downloads the correct binary for your architecture (x86_64 or aarch64)
+3. **Verifies SHA-256 checksum** against the release's `checksums.sha256` file (if available)
+4. Atomically replaces the running binary (backup → rename → cleanup)
+
+If the checksum file is missing from the release, a warning is shown but the update proceeds (HTTPS still protects transport). If the checksum doesn't match, the update is aborted.
 
 ### Global Options
 
@@ -1302,7 +1338,7 @@ The token is auto-generated on first start (64-char hex string). Authenticate vi
 | **Dashboard** | Real-time overview with threat stats, severity breakdown, recent events |
 | **Threats** | Searchable threat log with pagination, severity filters, detail modals |
 | **Firewall** | Active blocks, whitelist management, manual block/unblock |
-| **Status** | System health, module status, security posture score |
+| **Status** | System health, module status, security posture score, **storage monitoring with per-file breakdown and cleanup controls** |
 | **Config** | Live configuration viewer with validation |
 | **Logs** | Structured log viewer with filtering |
 
@@ -1310,14 +1346,15 @@ The token is auto-generated on first start (64-char hex string). Authenticate vi
 
 - **WebSocket live feed** — threats stream to the dashboard in real-time
 - **Token-based auth** — required only when exposed to the network; skipped for localhost. Constant-time comparison, secure cookie storage
-- **Rate limiting** — 120 req/min for reads, 10 req/min for mutative operations
+- **Rate limiting** — 120 req/min for reads, 10 req/min for mutative operations. Forwarded headers (`X-Forwarded-For`) are only trusted when bound to a non-localhost address to prevent rate-limit bypass via header spoofing
 - **CORS protection** — configurable allowed origins
 - **Mobile responsive** — works on all screen sizes
 - **PDF reports** — downloadable security reports
+- **Storage monitoring** — the Status page shows total disk usage, per-file sizes, active log fill percentage with progress bar, rotated file count, oldest event age, and a one-click cleanup button to purge old logs and dedup cache
 
 ### API
 
-27 routes including:
+29 routes including:
 - `GET /api/threats` — threat list with search/pagination
 - `GET /api/blocks` — active firewall blocks
 - `POST /api/block` / `POST /api/unblock` — manual IP management
@@ -1325,6 +1362,8 @@ The token is auto-generated on first start (64-char hex string). Authenticate vi
 - `POST /api/scan` — trigger on-demand scan
 - `GET /api/stats` — dashboard statistics
 - `GET /api/status` — system health
+- `GET /api/storage` — storage metrics (file sizes, ages, rotation status)
+- `POST /api/storage/cleanup` — purge rotated logs and dedup cache
 - `GET /api/report` — generate report
 - `GET /ws/threats` — WebSocket live threat stream
 
@@ -1551,6 +1590,59 @@ Complete list of all threat types Aegis can detect:
 
 ---
 
+## Storage & Log Management
+
+All Aegis data lives under the configured `data_dir` (default: `~/.aegis`):
+
+| File | Purpose | Size Limit | Rotation |
+|------|---------|-----------|----------|
+| `threats.jsonl` | Active threat log (append-only) | 10 MB | Yes &mdash; rotates to `.1`, `.2`, `.3` |
+| `threats.jsonl.1-3` | Rotated threat logs | 10 MB each | Oldest deleted on rotation |
+| `block_list.json` | Persisted blocked IPs | Grows with blocks | Expired entries pruned every 5 min |
+| `seen_fingerprints.json` | Dedup fingerprint cache | Grows with unique threats | Entries older than 24h pruned every 5 min |
+| `baseline.json` | File integrity baseline | Depends on watched files | Regenerated on `aegis baseline` |
+| `state.json` | Full app state snapshot | Small | Overwritten each save |
+| `feeds/` | Cached threat intel feeds | Depends on feed count | Refreshed on interval |
+| `quarantine/` | Quarantined suspicious files | Grows with detections | Manual cleanup |
+
+**Total worst-case disk usage:** ~50-100 MB under normal operation (40 MB threat logs + data files + feeds).
+
+### Monitoring Storage
+
+The **Status** page in the web dashboard shows a **Storage** section with:
+- Total disk usage across all data files
+- Per-file size breakdown in a table
+- Active log fill percentage with a color-coded progress bar (green/yellow/red)
+- Number of rotated files vs. maximum
+- Age of the oldest threat event
+- **"Purge Old Logs & Dedup Cache"** button &mdash; removes rotated log files and the seen-fingerprints cache. Preserves the active log, baseline, and block list.
+
+Programmatic access via API:
+```bash
+# Get storage metrics
+curl http://127.0.0.1:9443/api/storage
+
+# Purge old logs + dedup cache
+curl -X POST http://127.0.0.1:9443/api/storage/cleanup
+```
+
+### Memory Bounds (Long-Running Daemon)
+
+Aegis is designed for indefinite uptime. All in-memory structures are bounded:
+
+| Structure | Bound | Mechanism |
+|-----------|-------|-----------|
+| Threats in memory | 1000 max | Capped on startup + every 5 min |
+| Threat log loading | Streams line-by-line | Ring buffer keeps only last 1000 events |
+| Seen-threats map | 24h TTL | Pruned every 5 min |
+| Blocked IPs | Expiry-based | Pruned every 5 min |
+| Event bus | 1024 capacity | Oldest dropped for slow receivers |
+| Rate limiter | 120s TTL | Pruned every 5 min |
+
+Batch threat writes use a single file open + single `fsync()` instead of per-event I/O.
+
+---
+
 ## Architecture
 
 ```
@@ -1609,6 +1701,8 @@ Every module implements `scan()` for one-shot mode. The default `watch()` polls 
 - **No shell invocation** &mdash; All external commands (iptables, nft, kill) use `Command::new()` with explicit `.arg()` calls. Never `sh -c` or string interpolation.
 - **IP validation** &mdash; All IPs round-trip through `std::net::IpAddr` parsing before use in any command.
 - **Path canonicalization** &mdash; File integrity paths are validated against allowed directories.
+- **XSS hardening** &mdash; Dashboard modal messages use `textContent` (not `innerHTML`) for user-controlled content, preventing DOM injection even if template escaping is bypassed.
+- **Config validation on load** &mdash; Configuration is validated after parsing; warnings are logged for invalid values without breaking backward compatibility.
 
 ### Anti-Self-DoS
 
@@ -1616,6 +1710,13 @@ Every module implements `scan()` for one-shot mode. The default `watch()` polls 
 - **Whitelist-first** &mdash; Whitelist is checked before any action. Private ranges are always protected.
 - **Block expiry** &mdash; All auto-blocks have a TTL. No accidental permanent lockouts.
 - **Firewall rule cap** &mdash; Hard limit on chain size. Oldest entries expire first.
+- **No phantom blocks** &mdash; If a firewall rule fails to apply (e.g., iptables error), the IP is NOT added to the block list. The dashboard only shows blocks that are actually enforced in the kernel.
+
+### Data Integrity
+
+- **Atomic config writes** &mdash; Config merges write to a temp file then `rename()` over the original. A crash mid-write cannot corrupt the config.
+- **Threat log fsync** &mdash; Each threat append is flushed to disk with `sync_data()`. A kill -9 or kernel panic loses at most the current write, not the entire buffer.
+- **Update checksum verification** &mdash; Self-update downloads a SHA-256 checksums file and verifies the tarball before extracting. Protects against compromised CDN or release artifacts.
 
 ### Privilege Management
 
@@ -1657,13 +1758,19 @@ sudo systemctl status aegis
 sudo journalctl -u aegis -f    # Follow logs
 ```
 
-The service file includes security hardening:
+The service file includes security hardening and restart protection:
 
 ```ini
+[Unit]
+StartLimitIntervalSec=300
+StartLimitBurst=5            # Max 5 restarts per 5 minutes (prevents crash loops)
+
 [Service]
+TimeoutStopSec=30            # Enforces graceful shutdown deadline
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=/root/.aegis /etc/aegis    # Narrowed to only Aegis data paths
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

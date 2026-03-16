@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use aegis::cli::args::{Cli, Commands, WhitelistAction};
@@ -229,12 +229,22 @@ async fn cmd_watch(config: aegis::config::schema::AegisConfig, foreground: bool)
     // Handle SIGINT / SIGTERM for graceful shutdown.
     tokio::spawn(async move {
         let ctrl_c = tokio::signal::ctrl_c();
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("Failed to register SIGTERM handler");
 
-        tokio::select! {
-            _ = ctrl_c => info!("Received SIGINT, shutting down gracefully"),
-            _ = sigterm.recv() => info!("Received SIGTERM, shutting down gracefully"),
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = ctrl_c => info!("Received SIGINT, shutting down gracefully"),
+                    _ = sigterm.recv() => info!("Received SIGTERM, shutting down gracefully"),
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to register SIGTERM handler: {}. Falling back to SIGINT only.",
+                    e
+                );
+                let _ = ctrl_c.await;
+                info!("Received SIGINT, shutting down gracefully");
+            }
         }
         cancel_clone.cancel();
     });

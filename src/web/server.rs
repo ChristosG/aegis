@@ -124,6 +124,11 @@ pub async fn start_server(
         .route("/api/respond", post(routes::scan::api_respond))
         .route("/api/stats", get(routes::dashboard::api_stats))
         .route("/api/status", get(routes::status::api_status))
+        .route("/api/storage", get(routes::status::api_storage))
+        .route(
+            "/api/storage/cleanup",
+            post(routes::status::api_storage_cleanup),
+        )
         .route("/api/report", get(routes::report::api_report))
         .route("/report.pdf", get(routes::report::download_pdf))
         .route("/ws/threats", get(routes::ws::ws_threats))
@@ -141,7 +146,7 @@ pub async fn start_server(
         )
         .route("/api/logs", get(routes::logs::api_logs))
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
-        .layer(RateLimitLayer::new())
+        .layer(RateLimitLayer::new(is_localhost))
         .layer(cors)
         .with_state(ctx);
 

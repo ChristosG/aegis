@@ -545,8 +545,8 @@ impl ResponseEngine {
         // Execute the firewall block.
         info!(ip = %validated, reason = reason, "Blocking IP address");
         if let Err(e) = self.firewall.block_ip(&validated) {
-            error!(ip = %validated, error = %e, "Firewall block failed");
-            // Still record in state so the application knows it was attempted.
+            error!(ip = %validated, error = %e, "Firewall block failed — IP NOT added to block list");
+            return Err(e);
         }
 
         // Compute expiry time.

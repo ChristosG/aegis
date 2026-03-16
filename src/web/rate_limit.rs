@@ -25,21 +25,25 @@ struct RateLimitState {
 #[derive(Clone)]
 pub struct RateLimitLayer {
     state: Arc<Mutex<RateLimitState>>,
+    /// When true (localhost bind), ignore X-Forwarded-For / X-Real-IP headers
+    /// to prevent rate-limit bypass via header spoofing.
+    is_localhost: bool,
 }
 
 impl Default for RateLimitLayer {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
 impl RateLimitLayer {
-    pub fn new() -> Self {
+    pub fn new(is_localhost: bool) -> Self {
         Self {
             state: Arc::new(Mutex::new(RateLimitState {
                 buckets: HashMap::new(),
                 last_prune: Instant::now(),
             })),
+            is_localhost,
         }
     }
 }
@@ -51,6 +55,7 @@ impl<S> Layer<S> for RateLimitLayer {
         RateLimitService {
             inner,
             state: self.state.clone(),
+            is_localhost: self.is_localhost,
         }
     }
 }
@@ -59,6 +64,7 @@ impl<S> Layer<S> for RateLimitLayer {
 pub struct RateLimitService<S> {
     inner: S,
     state: Arc<Mutex<RateLimitState>>,
+    is_localhost: bool,
 }
 
 impl<S> Service<Request<Body>> for RateLimitService<S>
@@ -80,7 +86,7 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, self.is_localhost);
         let is_mutative =
             req.method() == axum::http::Method::POST || req.method() == axum::http::Method::DELETE;
         let max_tokens = if is_mutative { 10 } else { 120 };
@@ -134,22 +140,26 @@ where
     }
 }
 
-fn extract_client_ip(req: &Request<Body>) -> Option<IpAddr> {
-    // Try X-Forwarded-For first, then X-Real-IP
-    if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-        if let Ok(val) = forwarded.to_str() {
-            if let Some(first) = val.split(',').next() {
-                if let Ok(ip) = first.trim().parse() {
-                    return Some(ip);
+fn extract_client_ip(req: &Request<Body>, is_localhost: bool) -> Option<IpAddr> {
+    // Only trust forwarded headers when NOT bound to localhost.
+    // On localhost there is no reverse proxy, so an attacker could spoof
+    // X-Forwarded-For to bypass rate limits.
+    if !is_localhost {
+        if let Some(forwarded) = req.headers().get("x-forwarded-for") {
+            if let Ok(val) = forwarded.to_str() {
+                if let Some(first) = val.split(',').next() {
+                    if let Ok(ip) = first.trim().parse() {
+                        return Some(ip);
+                    }
                 }
             }
         }
-    }
 
-    if let Some(real_ip) = req.headers().get("x-real-ip") {
-        if let Ok(val) = real_ip.to_str() {
-            if let Ok(ip) = val.trim().parse() {
-                return Some(ip);
+        if let Some(real_ip) = req.headers().get("x-real-ip") {
+            if let Ok(val) = real_ip.to_str() {
+                if let Ok(ip) = val.trim().parse() {
+                    return Some(ip);
+                }
             }
         }
     }

@@ -1,0 +1,62 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove)
+        # On remove (not purge): clean runtime state only, preserve config.
+        # Flush AEGIS_BLOCK iptables chain if it exists.
+        if command -v iptables >/dev/null 2>&1; then
+            iptables -F AEGIS_BLOCK 2>/dev/null || true
+            iptables -D INPUT -j AEGIS_BLOCK 2>/dev/null || true
+            iptables -X AEGIS_BLOCK 2>/dev/null || true
+        fi
+        # Clean nftables aegis table if it exists.
+        if command -v nft >/dev/null 2>&1; then
+            nft delete table inet aegis 2>/dev/null || true
+        fi
+        echo "  Aegis removed. Config preserved in /etc/aegis/."
+        ;;
+
+    purge)
+        # On purge: clean everything.
+
+        # 1. Remove sysctl hardening config and re-apply.
+        if [ -f /etc/sysctl.d/99-aegis-hardening.conf ]; then
+            rm -f /etc/sysctl.d/99-aegis-hardening.conf
+            sysctl --system >/dev/null 2>&1 || true
+            echo "  Removed sysctl hardening config."
+        fi
+
+        # 2. Remove fail2ban filter and jail.
+        if [ -f /etc/fail2ban/filter.d/aegis.conf ]; then
+            rm -f /etc/fail2ban/filter.d/aegis.conf
+        fi
+        if [ -f /etc/fail2ban/jail.d/aegis.conf ]; then
+            rm -f /etc/fail2ban/jail.d/aegis.conf
+        fi
+        if command -v fail2ban-client >/dev/null 2>&1; then
+            fail2ban-client reload 2>/dev/null || true
+            echo "  Removed fail2ban aegis jail."
+        fi
+
+        # 3. Flush AEGIS_BLOCK iptables chain.
+        if command -v iptables >/dev/null 2>&1; then
+            iptables -F AEGIS_BLOCK 2>/dev/null || true
+            iptables -D INPUT -j AEGIS_BLOCK 2>/dev/null || true
+            iptables -X AEGIS_BLOCK 2>/dev/null || true
+            echo "  Flushed AEGIS_BLOCK iptables chain."
+        fi
+        # Clean nftables aegis table.
+        if command -v nft >/dev/null 2>&1; then
+            nft delete table inet aegis 2>/dev/null || true
+        fi
+
+        # 4. Remove config and data directories.
+        rm -rf /etc/aegis/
+        rm -rf /root/.aegis/
+
+        echo "  Aegis purged. All config, data, and system modifications removed."
+        ;;
+esac
+
+exit 0

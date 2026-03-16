@@ -475,8 +475,12 @@ impl NetworkModule {
         }
         let capped: std::collections::HashSet<(String, u16)> = baseline_vec.into_iter().collect();
         if let Ok(json) = serde_json::to_string_pretty(&capped) {
-            let _ = std::fs::create_dir_all(&data_dir);
-            let _ = std::fs::write(&baseline_path, json);
+            if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                warn!(error = %e, "Failed to create outbound baseline directory");
+            }
+            if let Err(e) = std::fs::write(&baseline_path, json) {
+                warn!(path = %baseline_path.display(), error = %e, "Failed to write outbound baseline");
+            }
         }
 
         threats

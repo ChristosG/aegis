@@ -55,6 +55,9 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
     // Phase 2: Config & data directories
     let (config_path, data_dir) = setup_directories(config)?;
 
+    // Track critical phase failures to gate the init marker.
+    let mut critical_failed = false;
+
     // Phase 3: Kernel hardening
     let sysctl_status = if flags.skip_sysctl {
         println!(
@@ -63,7 +66,18 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         );
         "skipped".to_string()
     } else {
-        sysctl::apply_sysctl_hardening()?
+        match sysctl::apply_sysctl_hardening() {
+            Ok(s) => s,
+            Err(e) => {
+                println!(
+                    "\n  {} Phase 3: Kernel Hardening failed: {}",
+                    "FAIL".red().bold(),
+                    e
+                );
+                critical_failed = true;
+                format!("FAILED: {}", e)
+            }
+        }
     };
 
     // Phase 4: File integrity baseline
@@ -126,11 +140,23 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         );
         "skipped".to_string()
     } else {
-        let removed = firewall::cleanup_firewall()?;
-        if removed > 0 {
-            format!("{} duplicate rules removed", removed)
-        } else {
-            "clean (no duplicates)".to_string()
+        match firewall::cleanup_firewall() {
+            Ok(removed) => {
+                if removed > 0 {
+                    format!("{} duplicate rules removed", removed)
+                } else {
+                    "clean (no duplicates)".to_string()
+                }
+            }
+            Err(e) => {
+                println!(
+                    "\n  {} Phase 5: Firewall Cleanup failed: {}",
+                    "FAIL".red().bold(),
+                    e
+                );
+                critical_failed = true;
+                format!("FAILED: {}", e)
+            }
         }
     };
 
@@ -154,7 +180,18 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         );
         "skipped".to_string()
     } else {
-        service::install_service()?
+        match service::install_service() {
+            Ok(s) => s,
+            Err(e) => {
+                println!(
+                    "\n  {} Phase 7: Systemd Service failed: {}",
+                    "FAIL".red().bold(),
+                    e
+                );
+                critical_failed = true;
+                format!("FAILED: {}", e)
+            }
+        }
     };
 
     // Phase 8: Dashboard setup
@@ -263,10 +300,22 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         }
     };
 
-    // Write init marker so dashboard/postinst can detect init has been run
-    let marker = Path::new("/etc/aegis/.init_done");
-    if let Err(e) = std::fs::write(marker, "1") {
-        println!("    {} Could not write init marker: {}", "WARN".yellow(), e);
+    // Write init marker so dashboard/postinst can detect init has been run.
+    // Only write if no critical phase (sysctl, firewall, service) failed.
+    if critical_failed {
+        println!(
+            "\n    {} Init marker NOT written — one or more critical phases failed.",
+            "WARN".yellow().bold()
+        );
+        println!(
+            "    {}",
+            "Re-run 'aegis init' after fixing the issues above.".dimmed()
+        );
+    } else {
+        let marker = Path::new("/etc/aegis/.init_done");
+        if let Err(e) = std::fs::write(marker, "1") {
+            println!("    {} Could not write init marker: {}", "WARN".yellow(), e);
+        }
     }
 
     // Summary

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -16,11 +16,12 @@ use crate::util::log_cursor::LogCursors;
 /// to detect SSH brute force attacks, root logins, and logins from new IPs.
 pub struct AuthModule {
     config: AuthConfig,
+    data_dir: PathBuf,
 }
 
 impl AuthModule {
-    pub fn new(config: AuthConfig) -> Self {
-        Self { config }
+    pub fn new(config: AuthConfig, data_dir: PathBuf) -> Self {
+        Self { config, data_dir }
     }
 }
 
@@ -140,7 +141,7 @@ impl ScanModule for AuthModule {
         let patterns = AuthPatterns::compile();
 
         // Load log cursor for incremental reading (only new lines since last scan)
-        let cursor_path = LogCursors::path_for_module("auth");
+        let cursor_path = LogCursors::path_for_module("auth", &self.data_dir);
         let mut cursors = LogCursors::load(&cursor_path);
 
         // Track failed attempts per IP: ip -> list of (username, timestamp)
@@ -398,7 +399,7 @@ mod tests {
             log_paths: vec![log_path.to_str().unwrap().to_string()],
         };
 
-        let module = AuthModule::new(config);
+        let module = AuthModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -430,7 +431,7 @@ mod tests {
             log_paths: vec![log_path.to_str().unwrap().to_string()],
         };
 
-        let module = AuthModule::new(config);
+        let module = AuthModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats
@@ -460,7 +461,7 @@ mod tests {
             log_paths: vec![log_path.to_str().unwrap().to_string()],
         };
 
-        let module = AuthModule::new(config);
+        let module = AuthModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats.is_empty());
@@ -468,6 +469,7 @@ mod tests {
 
     #[test]
     fn test_missing_log_file_is_handled() {
+        let dir = tempfile::tempdir().unwrap();
         let config = AuthConfig {
             enabled: true,
             brute_force_threshold: 5,
@@ -477,7 +479,7 @@ mod tests {
             log_paths: vec!["/nonexistent/path/auth.log".to_string()],
         };
 
-        let module = AuthModule::new(config);
+        let module = AuthModule::new(config, dir.path().to_path_buf());
         let rt = tokio::runtime::Runtime::new().unwrap();
         let threats = rt.block_on(module.scan()).unwrap();
         assert!(threats.is_empty());

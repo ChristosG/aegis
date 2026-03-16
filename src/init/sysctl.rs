@@ -25,10 +25,12 @@ net.ipv4.tcp_synack_retries = 2
 net.core.somaxconn = 4096
 net.ipv4.conf.all.log_martians = 1
 kernel.randomize_va_space = 2
+kernel.yama.ptrace_scope = 2
+kernel.unprivileged_bpf_disabled = 1
 ";
 
 /// Number of hardening parameters applied.
-pub const PARAM_COUNT: usize = 15;
+pub const PARAM_COUNT: usize = 17;
 
 /// Write kernel hardening sysctl parameters and apply them.
 ///

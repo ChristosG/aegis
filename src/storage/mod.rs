@@ -116,36 +116,92 @@ impl Storage {
         writeln!(file, "{}", json_line)
             .with_context(|| format!("Failed to write to threats log: {}", path.display()))?;
 
+        // Flush to disk so a crash/kill doesn't lose buffered events.
+        file.sync_data()
+            .with_context(|| format!("Failed to sync threats log: {}", path.display()))?;
+
         debug!(event_id = %event.id, "Threat event appended to JSONL log");
         Ok(())
     }
 
-    /// Append multiple threat events at once.
+    /// Append multiple threat events at once, using a single file open and sync.
     pub fn append_threats(&self, events: &[ThreatEvent]) -> Result<()> {
-        for event in events {
-            self.append_threat(event)?;
+        if events.is_empty() {
+            return Ok(());
         }
+
+        let path = self.data_dir.join("threats.jsonl");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        self.rotate_log_if_needed(&path)?;
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("Failed to open threats log: {}", path.display()))?;
+
+        set_permissions_0600(&path);
+
+        for event in events {
+            let json_line =
+                serde_json::to_string(event).context("Failed to serialize threat event")?;
+            writeln!(file, "{}", json_line)
+                .with_context(|| format!("Failed to write to threats log: {}", path.display()))?;
+        }
+
+        // Single sync for the entire batch.
+        file.sync_data()
+            .with_context(|| format!("Failed to sync threats log: {}", path.display()))?;
+
+        debug!(
+            count = events.len(),
+            "Batch-appended threat events to JSONL log"
+        );
         Ok(())
     }
 
-    /// Read all threat events from the JSONL threat log.
+    /// Read threat events from the JSONL threat log, keeping only the most
+    /// recent entries (bounded by MAX_LOAD_THREATS) to avoid loading a
+    /// multi-megabyte file entirely into memory.
+    const MAX_LOAD_THREATS: usize = 1000;
+
     pub fn load_threats(&self) -> Result<Vec<ThreatEvent>> {
+        use std::collections::VecDeque;
+        use std::io::{BufRead, BufReader};
+
         let path = self.data_dir.join("threats.jsonl");
         if !path.exists() {
             return Ok(Vec::new());
         }
 
-        let contents = fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read threats log: {}", path.display()))?;
+        let file = fs::File::open(&path)
+            .with_context(|| format!("Failed to open threats log: {}", path.display()))?;
+        let reader = BufReader::new(file);
 
-        let mut events = Vec::new();
-        for (line_num, line) in contents.lines().enumerate() {
-            let line = line.trim();
-            if line.is_empty() {
+        // Ring buffer: only keep the last MAX_LOAD_THREATS events so we never
+        // hold the entire (potentially 10 MB) file in memory.
+        let mut ring = VecDeque::with_capacity(Self::MAX_LOAD_THREATS + 1);
+        for (line_num, line_result) in reader.lines().enumerate() {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(e) => {
+                    warn!(line = line_num + 1, error = %e, "IO error reading threats log line");
+                    continue;
+                }
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<ThreatEvent>(line) {
-                Ok(event) => events.push(event),
+            match serde_json::from_str::<ThreatEvent>(trimmed) {
+                Ok(event) => {
+                    if ring.len() == Self::MAX_LOAD_THREATS {
+                        ring.pop_front();
+                    }
+                    ring.push_back(event);
+                }
                 Err(e) => {
                     warn!(
                         line = line_num + 1,
@@ -156,7 +212,7 @@ impl Storage {
             }
         }
 
-        Ok(events)
+        Ok(ring.into())
     }
 
     // -----------------------------------------------------------------------
@@ -400,6 +456,194 @@ impl Storage {
 
         Ok(Some(baseline))
     }
+
+    // -----------------------------------------------------------------------
+    // Storage metrics and cleanup
+    // -----------------------------------------------------------------------
+
+    /// Collect storage metrics for all data files.
+    pub fn storage_metrics(&self) -> StorageMetrics {
+        let threats_path = self.data_dir.join("threats.jsonl");
+
+        // Active threat log
+        let active_log = file_info(&threats_path);
+
+        // Rotated log files
+        let mut rotated_logs = Vec::new();
+        for i in 1..=Self::MAX_LOG_FILES {
+            let path = threats_path.with_extension(format!("jsonl.{}", i));
+            if path.exists() {
+                rotated_logs.push(file_info(&path));
+            }
+        }
+
+        let total_log_bytes = active_log.size + rotated_logs.iter().map(|f| f.size).sum::<u64>();
+
+        // Other data files
+        let block_list = file_info(&self.block_list_path());
+        let seen_threats = file_info(&self.seen_threats_path());
+        let baseline = file_info(&self.baseline_path());
+        let state_file = file_info(&self.data_dir.join("state.json"));
+
+        // Feeds directory total size
+        let feeds_dir = self.data_dir.join("feeds");
+        let feeds_size = dir_size(&feeds_dir);
+
+        // Quarantine directory total size
+        let quarantine_dir = self.data_dir.join("quarantine");
+        let quarantine_size = dir_size(&quarantine_dir);
+
+        let total_bytes = total_log_bytes
+            + block_list.size
+            + seen_threats.size
+            + baseline.size
+            + state_file.size
+            + feeds_size
+            + quarantine_size;
+
+        // Oldest threat timestamp (read first line of oldest rotated log or active)
+        let oldest_path = if let Some(last) = rotated_logs.last() {
+            PathBuf::from(&last.path)
+        } else {
+            threats_path.clone()
+        };
+        let oldest_threat_age_days = oldest_event_age_days(&oldest_path);
+
+        StorageMetrics {
+            data_dir: self.data_dir.display().to_string(),
+            active_log,
+            rotated_logs,
+            total_log_bytes,
+            block_list,
+            seen_threats,
+            baseline,
+            state_file,
+            feeds_size,
+            quarantine_size,
+            total_bytes,
+            oldest_threat_age_days,
+            max_log_size: Self::MAX_LOG_SIZE,
+            max_log_files: Self::MAX_LOG_FILES,
+        }
+    }
+
+    /// Purge rotated threat logs and clear the dedup cache.
+    /// Returns the number of bytes freed.
+    pub fn cleanup_storage(&self) -> Result<u64> {
+        let threats_path = self.data_dir.join("threats.jsonl");
+        let mut freed = 0u64;
+
+        // Remove rotated log files
+        for i in 1..=Self::MAX_LOG_FILES + 1 {
+            let path = threats_path.with_extension(format!("jsonl.{}", i));
+            if path.exists() {
+                let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+                if let Err(e) = fs::remove_file(&path) {
+                    warn!(path = %path.display(), error = %e, "Failed to remove rotated log");
+                } else {
+                    freed += size;
+                    info!(path = %path.display(), "Removed rotated threat log");
+                }
+            }
+        }
+
+        // Clear seen-fingerprints (dedup cache — safe to clear, just resets dedup)
+        let seen_path = self.seen_threats_path();
+        if seen_path.exists() {
+            let size = seen_path.metadata().map(|m| m.len()).unwrap_or(0);
+            if let Err(e) = fs::remove_file(&seen_path) {
+                warn!(error = %e, "Failed to remove seen-fingerprints");
+            } else {
+                freed += size;
+                info!("Cleared seen-fingerprints dedup cache");
+            }
+        }
+
+        info!(freed_bytes = freed, "Storage cleanup complete");
+        Ok(freed)
+    }
+}
+
+/// Metrics about Aegis data stored on disk.
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageMetrics {
+    pub data_dir: String,
+    pub active_log: FileInfo,
+    pub rotated_logs: Vec<FileInfo>,
+    pub total_log_bytes: u64,
+    pub block_list: FileInfo,
+    pub seen_threats: FileInfo,
+    pub baseline: FileInfo,
+    pub state_file: FileInfo,
+    pub feeds_size: u64,
+    pub quarantine_size: u64,
+    pub total_bytes: u64,
+    pub oldest_threat_age_days: Option<u64>,
+    pub max_log_size: u64,
+    pub max_log_files: usize,
+}
+
+/// Info about a single data file.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileInfo {
+    pub path: String,
+    pub size: u64,
+    pub exists: bool,
+}
+
+/// Get size and existence info for a file.
+fn file_info(path: &Path) -> FileInfo {
+    let (size, exists) = if path.exists() {
+        (path.metadata().map(|m| m.len()).unwrap_or(0), true)
+    } else {
+        (0, false)
+    };
+    FileInfo {
+        path: path.display().to_string(),
+        size,
+        exists,
+    }
+}
+
+/// Recursively sum file sizes in a directory.
+fn dir_size(path: &Path) -> u64 {
+    if !path.is_dir() {
+        return 0;
+    }
+    let mut total = 0u64;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                total += p.metadata().map(|m| m.len()).unwrap_or(0);
+            } else if p.is_dir() {
+                total += dir_size(&p);
+            }
+        }
+    }
+    total
+}
+
+/// Read the first line of a JSONL file to find the oldest threat timestamp.
+/// Returns the age in days from now, or None if the file is empty/unreadable.
+fn oldest_event_age_days(path: &Path) -> Option<u64> {
+    use std::io::{BufRead, BufReader};
+
+    let file = fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = line.ok()?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(event) = serde_json::from_str::<ThreatEvent>(trimmed) {
+            let age = Utc::now() - event.timestamp;
+            return Some(age.num_days().max(0) as u64);
+        }
+        break;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------

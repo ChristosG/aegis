@@ -98,6 +98,24 @@ impl Engine {
             }
         }
 
+        // Restore historical threats so the dashboard shows them on restart.
+        match storage.load_threats() {
+            Ok(threats) if !threats.is_empty() => {
+                info!(
+                    count = threats.len(),
+                    "Restoring {} threat(s) from disk",
+                    threats.len()
+                );
+                initial_state.add_threats(threats);
+                // Cap immediately to prevent OOM from large threat logs.
+                let evicted = initial_state.cap_threats();
+                if evicted > 0 {
+                    info!(evicted, "Capped in-memory threats on startup");
+                }
+            }
+            _ => {}
+        }
+
         Self {
             state: Arc::new(RwLock::new(initial_state)),
             modules: enabled_modules,
@@ -339,13 +357,7 @@ impl Engine {
             }
         }
 
-        // Persist all threats in shared state.
-        {
-            let mut state = self.state.write().await;
-            state.add_threats(all_threats.clone());
-        }
-
-        // Print summary.
+        // Print summary (before moving threats into state to avoid a clone).
         let duration = scan_start.elapsed();
         let summary = ScanSummary::from_threats(
             &all_threats,
@@ -364,6 +376,12 @@ impl Engine {
         // Print response summary if auto-respond was active.
         if auto_respond {
             output::print_response_summary(&all_threats);
+        }
+
+        // Persist all threats in shared state (move, no clone needed).
+        {
+            let mut state = self.state.write().await;
+            state.add_threats(all_threats.clone());
         }
 
         Ok(all_threats)
@@ -574,9 +592,14 @@ impl Engine {
             }
         }
 
-        // Wait for all watch tasks to finish.
-        for task in tasks {
-            let _ = task.await;
+        // Wait for all watch tasks to finish, with a timeout to prevent
+        // hanging on stuck tasks (e.g. inotify on NFS mount).
+        for (i, task) in tasks.into_iter().enumerate() {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!(task = i, error = %e, "Watch task panicked during shutdown"),
+                Err(_) => warn!(task = i, "Watch task did not exit within 5s, abandoning"),
+            }
         }
 
         {
@@ -712,9 +735,18 @@ fn threat_fingerprint(threat: &ThreatEvent) -> String {
 mod tests {
     use super::*;
 
+    /// Helper: create a config with an empty temp data dir so tests don't
+    /// load real threat/block data from ~/.aegis.
+    fn test_config() -> (AegisConfig, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = AegisConfig::default();
+        config.general.data_dir = tmp.path().to_string_lossy().to_string();
+        (config, tmp)
+    }
+
     #[tokio::test]
     async fn test_engine_creation() {
-        let config = AegisConfig::default();
+        let (config, _tmp) = test_config();
         let engine = Engine::new(config);
 
         // Default config enables all 6 modules.
@@ -727,7 +759,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_engine_scan_all_modules() {
-        let config = AegisConfig::default();
+        let (config, _tmp) = test_config();
         let engine = Engine::new(config);
 
         // Run scan without auto-respond, no filter (all modules).

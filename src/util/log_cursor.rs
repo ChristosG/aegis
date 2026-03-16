@@ -82,12 +82,9 @@ impl LogCursors {
     }
 
     /// Derive the cursor file path for a given module name.
-    /// Stored in `~/.aegis/cursor_{module}.json`.
-    pub fn path_for_module(module_name: &str) -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home)
-            .join(".aegis")
-            .join(format!("cursor_{}.json", module_name))
+    /// Stored in `<data_dir>/cursor_{module}.json`.
+    pub fn path_for_module(module_name: &str, data_dir: &Path) -> PathBuf {
+        data_dir.join(format!("cursor_{}.json", module_name))
     }
 }
 

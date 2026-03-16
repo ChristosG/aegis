@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use tracing::info;
+use sha2::{Digest, Sha256};
+use tracing::{info, warn};
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/ChristosG/aegis/releases/latest";
@@ -130,6 +131,66 @@ pub async fn run_update(check_only: bool, force: bool) -> Result<()> {
     }
 
     let bytes = response.bytes().await.context("Failed to read download")?;
+
+    // Verify SHA256 checksum if a checksums file is available in the release.
+    let checksum_asset_name = format!("{}-v{}-checksums.sha256", prefix, latest);
+    let checksum_asset = release
+        .assets
+        .iter()
+        .find(|a| a.name == checksum_asset_name);
+    if let Some(cs_asset) = checksum_asset {
+        println!("  Verifying SHA256 checksum...");
+        match client.get(&cs_asset.browser_download_url).send().await {
+            Ok(cs_resp) if cs_resp.status().is_success() => {
+                let cs_text = cs_resp
+                    .text()
+                    .await
+                    .context("Failed to read checksum file")?;
+                // Parse checksum file: each line is "hex_hash  filename"
+                let expected_hash = cs_text
+                    .lines()
+                    .find(|line| line.ends_with(&asset_name))
+                    .and_then(|line| line.split_whitespace().next())
+                    .map(|h| h.to_lowercase());
+
+                if let Some(expected) = expected_hash {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&bytes);
+                    let actual = format!("{:x}", hasher.finalize());
+
+                    if actual != expected {
+                        println!(
+                            "  {} Checksum mismatch!\n    Expected: {}\n    Got:      {}\n",
+                            "ERROR".red(),
+                            expected,
+                            actual
+                        );
+                        return Ok(());
+                    }
+                    println!("  {} Checksum verified (SHA256)", "OK".green());
+                } else {
+                    warn!("Checksum file found but no entry for {}", asset_name);
+                    println!(
+                        "  {} Checksum file has no entry for {}",
+                        "WARN".yellow(),
+                        asset_name
+                    );
+                }
+            }
+            _ => {
+                warn!("Could not download checksum file, skipping verification");
+                println!(
+                    "  {} Could not download checksum file, skipping verification",
+                    "WARN".yellow()
+                );
+            }
+        }
+    } else {
+        println!(
+            "  {} No checksum file in release, skipping verification",
+            "WARN".yellow()
+        );
+    }
 
     // Extract and replace binary
     let current_exe = std::env::current_exe().context("Failed to determine current binary path")?;

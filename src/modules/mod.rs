@@ -77,10 +77,15 @@ pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
                 )));
             }
             "auth" if config.auth.enabled => {
-                modules.push(Arc::new(auth::AuthModule::new(config.auth.clone())));
+                let data_dir = crate::config::defaults::resolve_path(&config.general.data_dir);
+                modules.push(Arc::new(auth::AuthModule::new(
+                    config.auth.clone(),
+                    data_dir,
+                )));
             }
             "web" if config.web.enabled => {
-                modules.push(Arc::new(web::WebModule::new(config.web.clone())));
+                let data_dir = crate::config::defaults::resolve_path(&config.general.data_dir);
+                modules.push(Arc::new(web::WebModule::new(config.web.clone(), data_dir)));
             }
             "threat_intel" if config.threat_intel.enabled => {
                 modules.push(Arc::new(threat_intel::ThreatIntelModule::new(
