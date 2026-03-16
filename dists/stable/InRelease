@@ -4,44 +4,44 @@ Hash: SHA512
 Origin: Aegis
 Label: Aegis
 Codename: stable
-Date: Mon, 16 Mar 2026 01:29:53 UTC
+Date: Mon, 16 Mar 2026 01:51:08 UTC
 Architectures: amd64 arm64
 Components: main
 Description: Aegis Linux Security Monitoring
 MD5Sum:
- fd8fc013a8b54e7bd3af5787edd754f1 1462 main/binary-amd64/Packages
- f93d36ddc2bdf6d9849ccfc38b21c34d 682 main/binary-amd64/Packages.gz
+ 564781c986a437d5d4999344beaa9e73 1462 main/binary-amd64/Packages
+ fabd55daaa8b10a46be01479b9275a12 682 main/binary-amd64/Packages.gz
  b5286484d798333c0b73d5d804793242 108 main/binary-amd64/Release
- 70404fca0c42a5d16f4ec36384f1ef0a 1461 main/binary-arm64/Packages
- d9a13e02137ae3a211baa23dbd31e926 680 main/binary-arm64/Packages.gz
+ c4633d1f3a669d0d34f3ea4a1b65789f 1461 main/binary-arm64/Packages
+ 799010ee3bd421c3270f67d7f54f0ba5 681 main/binary-arm64/Packages.gz
  5b293232f7cff94481a676ab015f94c8 108 main/binary-arm64/Release
 SHA1:
- 188cf03c3960f5ae5fd084ba4194deb283092832 1462 main/binary-amd64/Packages
- 6201ea59f53879dc437beca7ca52a5b3809630ed 682 main/binary-amd64/Packages.gz
+ 0b50f6bc9164170763a05e8068be36af52517876 1462 main/binary-amd64/Packages
+ bf4c4b050721cc3d5b3a0e88e4c677982d11bf3c 682 main/binary-amd64/Packages.gz
  fcd572c70f7646d6a7608ea19254b4d8536e07c3 108 main/binary-amd64/Release
- ef1ba712e177ffaf4698dc0bb0e8f64af0a3ffdd 1461 main/binary-arm64/Packages
- b0b28b46eb4d8873c39faa9d203adf3a06474a72 680 main/binary-arm64/Packages.gz
+ f7ec2149d7698f90d30d64dbedef4bcfcceef258 1461 main/binary-arm64/Packages
+ 93bd3f4378c1bf6a1a1e912c0945d1a06fcd11c6 681 main/binary-arm64/Packages.gz
  dd399189261790b2ae3ff06fb671ee7374454085 108 main/binary-arm64/Release
 SHA256:
- df5ed66818c93124db4ab3ddbb33063ad14e1c87a56d99e1a5399d96c2742231 1462 main/binary-amd64/Packages
- b5fe35df5253750a9c043064d423840562170b30b60f77cdfacf17121a9d6025 682 main/binary-amd64/Packages.gz
+ 11890ae566b7efdd94cf5bfeba3da0f26e9ac873975e825479712b0593b439df 1462 main/binary-amd64/Packages
+ 736b3722e5e93c0a4612ed9d5a9e2f320a23ff4037e36d96a9191a7e0c9c21e9 682 main/binary-amd64/Packages.gz
  4976b97e66d114b004c8a7a3c5e53eed2d4a81986d6def337177fc287466bd9e 108 main/binary-amd64/Release
- 194986d079489a452034bae5e2ac0802773bf68cb23b4654e885ee0a614ca355 1461 main/binary-arm64/Packages
- 07386cd22e0f171531e9d35ee5a62732d6a5900a56f64966d5cf8088a093eb72 680 main/binary-arm64/Packages.gz
+ 2ad875521bec3f51e90a9963e2d1d5c3f3ddd4512900e1fb26ec9defb8470820 1461 main/binary-arm64/Packages
+ 24ee8636d8ac4e65b73bd8845c58047fae4af18e57d9908b159de98e43e53702 681 main/binary-arm64/Packages.gz
  58fc6a41380227433cd0d3d614eedb7867a07763c528255713c9d6aaa688e644 108 main/binary-arm64/Release
 -----BEGIN PGP SIGNATURE-----
 
-iQIzBAEBCgAdFiEEHse5iA326PzJfVccDUOcOHsezP8FAmm3XRIACgkQDUOcOHse
-zP/efA/9HojRCVg1jcPlZhYMAfN3uO2a4/t7DqtTnntTYDzh9pkGK15Y5/kXqjUD
-53AMXi+3VMDFRXl5ItaRuE1CkI3AyJ4kGHhOrHMqh87vrth600bBNlCM9iePZHWY
-ycek+Lwj4w3xy86UbSi2GcwCxNhxan1ODI4X6+15wUJBsJ8HYnGEV6YSOTgWyUC6
-p2O5fP1gE5vL+PSouvOb9AFwog0iaZ73EQDbC012BwwR+xTkVdEj0xuP8fNPEaD5
-Gur+S7MWFXiS2kSjzKCFmu4ryFT9LNTWOOIfdtM4Y3GvyvD5Sii/f423WgyVG/XU
-g3l5dcxAGubkRQEGlwG1EakrVTuQERKeaP5e+mKnCYFZo84e+G1fjuI8y+e6cC3I
-/6hTYKq3YBpqosR+I8c/uYQRzQSoIzOj7TP/ulgJTMRmzxFkNgzHgP+ZZhWKK6uD
-ELxtHhT9Y71sRMT5Rgnnew9MKZvQL5F9fWsnI+gG0fY028/6qQvHGNZmq9grn7cC
-0/kOT/Jou45DrODEMiqeruDUIzTr+Mw7TJdYTasn5XBbyVACWFcGPjJZ6qtHCNaA
-hCPb5P5/wMrVdRrX7gxF/fGFJZj/E1MO8BPeyzkM8jv8oX7qPiAbN48C/PRM789B
-lzqjJD0WTqZWqmfrRMgTCuK1amM7hpksxSqMuMJeO5sqdJU3mjA=
-=HprH
+iQIzBAEBCgAdFiEEHse5iA326PzJfVccDUOcOHsezP8FAmm3YgwACgkQDUOcOHse
+zP+0bg/8CYC+nG1smhGFav7W0H8TwRMWi4OtCwIsIQCJBEJa/UfoLsB0niL+7TYt
+9OtqYgexJIAbwby8APLKWbMVhHm/3Jk4EXywzhMwvXE6bZI1hYGHyxAxDc4vBCKJ
++JJzhRfdcweQl7NJ8+aSZZx8+9btLkCnGSTr1R3URE+edsl0r1Vgdb8NIKwjXjeZ
+aKV1uW/62PGDsvgnGMKWwJrhnHLpzqsIhbpbVPvA5NCYgQUPwBEXZ3L2DF2IkdCX
+zy70H5rx51vZqCVegT+BH60PKmZUqQNmu+3T6s7APXzUohZrH1pw5AcwxPCGBKyl
+w3RWnpewb96N2GB92imAP0lz4tjxRdKS0h8IcO0TR/7y8kpNKTqSgRws96oRM1C3
+VtlbfuMzTxo3xw7WlAgJJm99u6O3QzdOGV8uKiIpWUUfpjCEe9dBK/tNDT4yUSB9
+nyiJ7VKqxaU2Cn2pEoSSWD8x0Edu6Ryo45mZ6peHTM1WMYi4wCZ6Wt8Q4eflesTX
+O0Q8QDCXaTv1YbN9qLhicGXZ/LERbNHQ4S5jzX2Jky6iu6dMpkGlavv0uAqL61JQ
+2/Eg+ixoTRqkdbvT49ewOTxApc2OxsRVugSwZKtpy5SJVg7DkXjU97oNxtxLi80a
+pLV12/oxH87/ptltCJUPWbsvy6fcHhm7hlnZ8Ql47WuwXaOXCEM=
+=P6a3
 -----END PGP SIGNATURE-----
