@@ -11,21 +11,30 @@ if [ -n "$2" ]; then
     echo ""
     echo "  Aegis upgraded (${2} -> $(aegis --version 2>/dev/null || echo 'new'))."
     aegis config-upgrade 2>/dev/null || true
-    if systemctl is-active --quiet aegis 2>/dev/null; then
+    if systemctl is-enabled --quiet aegis 2>/dev/null; then
         systemctl restart aegis
         echo "  Service restarted. Blocked IPs and config preserved."
     else
-        echo "  Start with: sudo systemctl start aegis"
+        echo "  Service not enabled. Start with: sudo systemctl enable --now aegis"
     fi
     echo ""
 else
     # Fresh install
-    echo ""
-    echo "  Aegis installed. Next steps:"
-    echo "    1. sudo aegis init        (first-time system hardening)"
-    echo "    2. sudo systemctl enable --now aegis"
-    echo "  Config: /etc/aegis/aegis.toml"
-    echo ""
-    echo "  Do NOT run 'aegis init' on upgrades — it is only for first-time setup."
-    echo ""
+    if [ -f /etc/aegis/.init_done ]; then
+        # Init was already run (e.g. user ran aegis init before installing the .deb)
+        systemctl enable --now aegis 2>/dev/null || true
+        echo ""
+        echo "  Aegis installed and started."
+        echo "  Config: /etc/aegis/aegis.toml"
+        echo ""
+    else
+        echo ""
+        echo "  Aegis installed. Next steps:"
+        echo "    1. sudo aegis init                     (first-time system hardening)"
+        echo "    2. sudo systemctl enable --now aegis   (start the daemon)"
+        echo "  Config: /etc/aegis/aegis.toml"
+        echo ""
+        echo "  Do NOT run 'aegis init' on upgrades — it is only for first-time setup."
+        echo ""
+    fi
 fi

@@ -263,6 +263,12 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
         }
     };
 
+    // Write init marker so dashboard/postinst can detect init has been run
+    let marker = Path::new("/etc/aegis/.init_done");
+    if let Err(e) = std::fs::write(marker, "1") {
+        println!("    {} Could not write init marker: {}", "WARN".yellow(), e);
+    }
+
     // Summary
     let summary = InitSummary {
         config_path,

@@ -5,6 +5,15 @@ const STYLE: &str = include_str!("static/style.css");
 const APP_JS: &str = include_str!("static/app.js");
 
 fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> String {
+    let init_done = std::path::Path::new("/etc/aegis/.init_done").exists();
+    let init_banner = if init_done {
+        ""
+    } else {
+        r#"<div style="background:#d29922;color:#0d1117;padding:10px 16px;font-size:13px;font-weight:600;text-align:center;border-radius:6px;margin-bottom:16px">
+            System hardening not configured. Run <code style="background:rgba(0,0,0,0.15);padding:2px 6px;border-radius:3px">sudo aegis init</code> for full setup (kernel hardening, fail2ban, file integrity baseline).
+        </div>"#
+    };
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -34,6 +43,7 @@ fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> 
             <span class="version">v{version}</span>
         </header>
         <div class="main-content">
+            {init_banner}
             {content}
         </div>
     </main>
@@ -55,6 +65,7 @@ fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> 
         title = title,
         content = content,
         token = token,
+        init_banner = init_banner,
         version = env!("CARGO_PKG_VERSION"),
         dash_active = if current_page == "dashboard" {
             " active"
