@@ -7,7 +7,7 @@ use axum::{
 };
 use tracing::{info, warn};
 
-use crate::config::defaults::find_config_path;
+use crate::config::defaults::find_system_config_path;
 use crate::util::proc_parse;
 use crate::web::server::AppContext;
 use crate::web::templates;
@@ -154,7 +154,7 @@ pub async fn api_config_update(
     }
 
     // Load config file
-    let config_path = match find_config_path(None) {
+    let config_path = match find_system_config_path() {
         Some(p) => p,
         None => {
             return Json(serde_json::json!({
@@ -350,7 +350,7 @@ pub async fn api_module_toggle(
         }));
     }
 
-    let config_path = match find_config_path(None) {
+    let config_path = match find_system_config_path() {
         Some(p) => p,
         None => {
             return Json(serde_json::json!({

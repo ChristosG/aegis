@@ -580,7 +580,7 @@ async fn cmd_whitelist(
             }
 
             // Use toml_edit to preserve comments/formatting
-            let config_path = aegis::config::defaults::find_config_path(None)
+            let config_path = aegis::config::defaults::find_system_config_path()
                 .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
             let content = std::fs::read_to_string(&config_path)?;
             let mut doc = content
@@ -609,7 +609,7 @@ async fn cmd_whitelist(
             );
         }
         WhitelistAction::Remove { cidr } => {
-            let config_path = aegis::config::defaults::find_config_path(None)
+            let config_path = aegis::config::defaults::find_system_config_path()
                 .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
             let content = std::fs::read_to_string(&config_path)?;
             let mut doc = content
@@ -661,7 +661,7 @@ async fn cmd_fi(config: aegis::config::schema::AegisConfig, on: bool, off: bool)
     }
 
     let enable = on;
-    let config_path = aegis::config::defaults::find_config_path(None)
+    let config_path = aegis::config::defaults::find_system_config_path()
         .ok_or_else(|| anyhow::anyhow!("No config file found. Run 'aegis init' first."))?;
     let content = std::fs::read_to_string(&config_path)?;
     let mut doc = content
@@ -755,8 +755,10 @@ fn cmd_init(
 }
 
 /// Merge new default config keys into the user's existing aegis.toml.
+/// Uses the system config path (/etc/aegis/) to avoid modifying a
+/// development copy in the current working directory.
 fn cmd_config_upgrade() -> Result<()> {
-    let config_path = aegis::config::defaults::find_config_path(None);
+    let config_path = aegis::config::defaults::find_system_config_path();
     match config_path {
         Some(path) => {
             let added = aegis::config::defaults::merge_default_into(&path)?;

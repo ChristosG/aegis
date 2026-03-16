@@ -28,6 +28,20 @@ pub fn find_config_path(explicit: Option<&PathBuf>) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
+/// Find the system configuration file for write operations (config-upgrade,
+/// whitelist changes, fi toggle, etc.).  Skips `./aegis.toml` to avoid
+/// accidentally modifying a development copy in the current working directory.
+pub fn find_system_config_path() -> Option<PathBuf> {
+    let candidates = vec![
+        PathBuf::from("/etc/aegis/aegis.toml"),
+        dirs::config_dir()
+            .map(|d| d.join("aegis").join("aegis.toml"))
+            .unwrap_or_default(),
+    ];
+
+    candidates.into_iter().find(|p| p.exists())
+}
+
 /// Return a fully-populated default configuration.
 pub fn default_config() -> AegisConfig {
     AegisConfig::default()

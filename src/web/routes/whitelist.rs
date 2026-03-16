@@ -95,7 +95,7 @@ pub async fn api_whitelist_remove(
 }
 
 fn persist_whitelist_add(cidr: &str) -> anyhow::Result<()> {
-    let config_path = crate::config::defaults::find_config_path(None)
+    let config_path = crate::config::defaults::find_system_config_path()
         .ok_or_else(|| anyhow::anyhow!("No config file found"))?;
 
     let content = std::fs::read_to_string(&config_path)?;
@@ -130,7 +130,7 @@ fn persist_whitelist_add(cidr: &str) -> anyhow::Result<()> {
 }
 
 fn persist_whitelist_remove(cidr: &str) -> anyhow::Result<()> {
-    let config_path = crate::config::defaults::find_config_path(None)
+    let config_path = crate::config::defaults::find_system_config_path()
         .ok_or_else(|| anyhow::anyhow!("No config file found"))?;
 
     let content = std::fs::read_to_string(&config_path)?;

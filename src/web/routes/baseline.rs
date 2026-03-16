@@ -2,7 +2,7 @@ use axum::extract::{Query, State};
 use axum::response::Json;
 use tracing::{info, warn};
 
-use crate::config::defaults::{find_config_path, resolve_path};
+use crate::config::defaults::{find_system_config_path, resolve_path};
 use crate::web::server::AppContext;
 
 pub async fn api_baseline_reset(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
@@ -114,7 +114,7 @@ pub async fn api_fi_toggle(
         }
     };
 
-    let config_path = match find_config_path(None) {
+    let config_path = match find_system_config_path() {
         Some(p) => p,
         None => {
             return Json(serde_json::json!({

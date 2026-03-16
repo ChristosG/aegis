@@ -104,7 +104,7 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
 
         if enable_fi {
             // Update aegis.toml to enable FI
-            if let Some(cfg_path) = crate::config::defaults::find_config_path(None) {
+            if let Some(cfg_path) = crate::config::defaults::find_system_config_path() {
                 if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(mut doc) = content.parse::<toml_edit::DocumentMut>() {
                         if !doc.contains_key("file_integrity") {
@@ -220,7 +220,7 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
 
         if enable_dashboard {
             // Update aegis.toml to enable dashboard
-            if let Some(cfg_path) = crate::config::defaults::find_config_path(None) {
+            if let Some(cfg_path) = crate::config::defaults::find_system_config_path() {
                 if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                     if let Ok(mut doc) = content.parse::<toml_edit::DocumentMut>() {
                         if !doc.contains_key("dashboard") {

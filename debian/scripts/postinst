@@ -11,18 +11,21 @@ if [ -n "$2" ]; then
     echo ""
     echo "  Aegis upgraded (${2} -> $(aegis --version 2>/dev/null || echo 'new'))."
 
-    # Backup config before upgrade merge
+    # Backup config before upgrade merge, restore on failure, clean up on success
     if [ -f /etc/aegis/aegis.toml ]; then
         cp /etc/aegis/aegis.toml /etc/aegis/aegis.toml.bak
     fi
 
-    if ! aegis config-upgrade 2>/dev/null; then
-        echo "  WARN: config-upgrade failed."
+    if upgrade_err=$(aegis config-upgrade 2>&1); then
+        echo "  Config merge: OK"
+    else
+        echo "  WARN: config-upgrade failed: $upgrade_err"
         if [ -f /etc/aegis/aegis.toml.bak ]; then
             cp /etc/aegis/aegis.toml.bak /etc/aegis/aegis.toml
             echo "  Restored config from backup."
         fi
     fi
+    rm -f /etc/aegis/aegis.toml.bak
 
     if systemctl is-enabled --quiet aegis 2>/dev/null; then
         systemctl try-restart aegis
