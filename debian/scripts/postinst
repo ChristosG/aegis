@@ -1,5 +1,8 @@
 #!/bin/sh
 set -e
+
+AEGIS=/usr/local/bin/aegis
+
 mkdir -p /root/.aegis
 if command -v systemctl >/dev/null 2>&1; then
     systemctl daemon-reload
@@ -9,14 +12,14 @@ fi
 if [ -n "$2" ]; then
     # Upgrade: merge new config options, restart service
     echo ""
-    echo "  Aegis upgraded (${2} -> $(aegis --version 2>/dev/null || echo 'new'))."
+    echo "  Aegis upgraded (${2} -> $($AEGIS --version 2>/dev/null || echo 'new'))."
 
     # Backup config before upgrade merge, restore on failure, clean up on success
     if [ -f /etc/aegis/aegis.toml ]; then
         cp /etc/aegis/aegis.toml /etc/aegis/aegis.toml.bak
     fi
 
-    if upgrade_err=$(aegis config-upgrade 2>&1); then
+    if upgrade_err=$($AEGIS config-upgrade 2>&1); then
         echo "  Config merge: OK"
     else
         echo "  WARN: config-upgrade failed: $upgrade_err"
