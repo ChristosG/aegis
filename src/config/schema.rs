@@ -625,6 +625,9 @@ pub struct AnomalyConfig {
     pub watch_sudoers: bool,
     /// Watch for new user accounts.
     pub watch_user_changes: bool,
+    /// Kernel module names to ignore (supports glob suffix, e.g. "xt_*").
+    #[serde(default)]
+    pub kernel_module_whitelist: Vec<String>,
 }
 
 impl Default for AnomalyConfig {
@@ -635,6 +638,7 @@ impl Default for AnomalyConfig {
             watch_cron: true,
             watch_sudoers: true,
             watch_user_changes: true,
+            kernel_module_whitelist: Vec::new(),
         }
     }
 }

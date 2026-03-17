@@ -78,7 +78,17 @@ impl AnomalyModule {
                             line.trim()
                         );
                         let mut event =
-                            ThreatEvent::new(ThreatType::UnusualLoginTime, "anomaly", desc);
+                            ThreatEvent::new(ThreatType::UnusualLoginTime, "anomaly", desc)
+                                .with_detail("login_hour", format!("{:02}:00", hour));
+
+                        // Try to extract username from "for <username>" pattern
+                        if let Some(pos) = line.find(" for ") {
+                            let after = &line[pos + 5..];
+                            let username = after.split_whitespace().next().unwrap_or("");
+                            if !username.is_empty() {
+                                event = event.with_detail("username", username);
+                            }
+                        }
 
                         // Try to extract source IP from the line
                         if let Some(ip) = extract_ip_from_line(line) {
@@ -130,7 +140,8 @@ impl AnomalyModule {
                                 "anomaly",
                                 format!("Cron file modified: {}", path),
                             )
-                            .with_target(path.clone()),
+                            .with_target(path.clone())
+                            .with_detail("file_hash", hash.clone()),
                         );
                     }
                     None => {
@@ -140,7 +151,8 @@ impl AnomalyModule {
                                 "anomaly",
                                 format!("New cron file detected: {}", path),
                             )
-                            .with_target(path.clone()),
+                            .with_target(path.clone())
+                            .with_detail("file_hash", hash.clone()),
                         );
                     }
                     _ => {}
@@ -185,7 +197,8 @@ impl AnomalyModule {
                                 format!("Sudoers file modified: {}", path),
                             )
                             .with_target(path.clone())
-                            .with_severity(ThreatSeverity::High),
+                            .with_severity(ThreatSeverity::High)
+                            .with_detail("file_hash", hash.clone()),
                         );
                     }
                     None => {
@@ -196,7 +209,8 @@ impl AnomalyModule {
                                 format!("New sudoers file detected: {}", path),
                             )
                             .with_target(path.clone())
-                            .with_severity(ThreatSeverity::High),
+                            .with_severity(ThreatSeverity::High)
+                            .with_detail("file_hash", hash.clone()),
                         );
                     }
                     _ => {}
@@ -258,10 +272,19 @@ impl AnomalyModule {
         let mut threats = Vec::new();
         let baseline_path = self.data_dir.join("kernel_modules_baseline.json");
 
-        let current_modules = match parse_kernel_modules() {
+        let current_modules_with_size = match parse_kernel_modules() {
             Ok(m) => m,
             Err(_) => return threats,
         };
+
+        // Build name→size map for enrichment
+        let size_map: HashMap<String, String> = current_modules_with_size.iter().cloned().collect();
+
+        // Extract just names for baseline comparison
+        let current_names: Vec<String> = current_modules_with_size
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
 
         let baseline_modules: Vec<String> = if baseline_path.exists() {
             match std::fs::read_to_string(&baseline_path) {
@@ -273,23 +296,39 @@ impl AnomalyModule {
         };
 
         if !baseline_modules.is_empty() {
-            for module in &current_modules {
+            for module in &current_names {
                 if !baseline_modules.contains(module) {
-                    threats.push(
-                        ThreatEvent::new(
-                            ThreatType::KernelModuleLoaded,
-                            "anomaly",
-                            format!("New kernel module detected: {}", module),
-                        )
-                        .with_detail("module_name", module.clone())
-                        .with_severity(ThreatSeverity::High),
-                    );
+                    // Check if module matches the whitelist (supports glob prefixes like "xt_*")
+                    let whitelisted = self.config.kernel_module_whitelist.iter().any(|pattern| {
+                        if let Some(prefix) = pattern.strip_suffix('*') {
+                            module.starts_with(prefix)
+                        } else {
+                            module == pattern
+                        }
+                    });
+                    if whitelisted {
+                        debug!(module = %module, "Ignoring whitelisted kernel module");
+                        continue;
+                    }
+                    let mut event = ThreatEvent::new(
+                        ThreatType::KernelModuleLoaded,
+                        "anomaly",
+                        format!("New kernel module detected: {}", module),
+                    )
+                    .with_detail("module_name", module.clone())
+                    .with_severity(ThreatSeverity::Medium);
+
+                    if let Some(size) = size_map.get(module) {
+                        event = event.with_detail("module_size", format!("{} bytes", size));
+                    }
+
+                    threats.push(event);
                 }
             }
         }
 
-        // Save current as baseline
-        if let Ok(json) = serde_json::to_string_pretty(&current_modules) {
+        // Save current names as baseline
+        if let Ok(json) = serde_json::to_string_pretty(&current_names) {
             let _ = std::fs::write(&baseline_path, json);
         }
 
@@ -399,14 +438,17 @@ fn hash_paths(paths: &[String]) -> HashMap<String, String> {
     result
 }
 
-/// Parse kernel module names from /proc/modules.
-fn parse_kernel_modules() -> Result<Vec<String>> {
+/// Parse kernel module names and sizes from /proc/modules.
+/// Returns Vec of (name, size_bytes_string).
+fn parse_kernel_modules() -> Result<Vec<(String, String)>> {
     let content = std::fs::read_to_string("/proc/modules")?;
-    let modules: Vec<String> = content
+    let modules: Vec<(String, String)> = content
         .lines()
         .filter_map(|line| {
-            let name = line.split_whitespace().next()?;
-            Some(name.to_string())
+            let mut fields = line.split_whitespace();
+            let name = fields.next()?.to_string();
+            let size = fields.next().unwrap_or("0").to_string();
+            Some((name, size))
         })
         .collect();
     Ok(modules)

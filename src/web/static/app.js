@@ -436,10 +436,164 @@ document.addEventListener('click', function(e) {
     } catch(err) {}
 });
 
+// --- Detail label mapping: raw keys → human-readable labels ---
+var DETAIL_LABELS = {
+    process_name: 'Process',
+    process_exe: 'Executable',
+    process_cmdline: 'Command Line',
+    process_pid: 'PID',
+    parent_name: 'Parent Process',
+    parent_pid: 'Parent PID',
+    local_port: 'Local Port',
+    remote_port: 'Remote Port',
+    request_method: 'Method',
+    request_path: 'Request Path',
+    request: 'Full Request',
+    user_agent: 'User Agent',
+    referer: 'Referer',
+    response_bytes: 'Response Size',
+    status: 'HTTP Status',
+    auth_method: 'Auth Method',
+    target_port: 'Target Port',
+    failed_count: 'Failed Attempts',
+    unique_usernames_count: 'Unique Usernames',
+    usernames_targeted: 'Usernames Targeted',
+    top_usernames: 'Top Usernames',
+    window_seconds: 'Attack Duration',
+    first_attempt: 'First Attempt',
+    last_attempt: 'Last Attempt',
+    threshold: 'Threshold',
+    syn_recv_count: 'SYN_RECV Count',
+    top_source_ips: 'Top Source IPs',
+    unique_ports: 'Unique Ports',
+    sample_ports: 'Scanned Ports',
+    target_ports: 'Target Ports',
+    target_ports_full: 'All Scanned Ports',
+    target_services: 'Target Services',
+    connection_count: 'Connections',
+    request_count: 'Request Count',
+    top_paths: 'Top Paths',
+    user_agents: 'User Agents',
+    time_window: 'Time Window',
+    requests_per_minute: 'Requests/min',
+    module_name: 'Module Name',
+    module_size: 'Module Size',
+    file_hash: 'File Hash',
+    reason: 'Reason',
+    response_action: 'Response Action',
+    dest_port: 'Destination Port',
+    login_type: 'Login Type',
+    login_hour: 'Login Hour',
+    process: 'Process',
+    honeypot_port: 'Honeypot Port',
+    source_port: 'Source Port',
+    feeds: 'Matched Feeds',
+    max_weight: 'Max Feed Weight',
+    pid: 'PID',
+    name: 'Name',
+    exe: 'Executable',
+    uid: 'UID',
+    cmdline: 'Command Line',
+    cpu_usage: 'CPU Usage',
+    matched_pattern: 'Matched Pattern',
+    detection_method: 'Detection Method',
+    remote_addresses: 'Remote Addresses',
+    username: 'Username'
+};
+
+// --- Section groupings by source module ---
+var DETAIL_SECTIONS = {
+    network: [
+        { title: 'Process', keys: ['process_name', 'process_exe', 'process_cmdline', 'process_pid', 'parent_name', 'parent_pid', 'process'] },
+        { title: 'Connection', keys: ['local_port', 'remote_port', 'dest_port'] },
+        { title: 'Detection', keys: ['threshold', 'connection_count', 'unique_ports', 'sample_ports', 'target_ports_full', 'target_ports', 'target_services', 'syn_recv_count', 'top_source_ips'] }
+    ],
+    web: [
+        { title: 'HTTP Request', keys: ['request_method', 'request_path', 'request', 'user_agent', 'referer', 'status', 'response_bytes'] },
+        { title: 'Attack', keys: ['reason', 'request_count', 'threshold', 'top_paths', 'user_agents', 'time_window', 'requests_per_minute'] }
+    ],
+    auth: [
+        { title: 'Authentication', keys: ['auth_method', 'target_port', 'login_type', 'login_hour'] },
+        { title: 'Attack', keys: ['failed_count', 'unique_usernames_count', 'top_usernames', 'usernames_targeted', 'threshold', 'window_seconds', 'first_attempt', 'last_attempt'] }
+    ],
+    process: [
+        { title: 'Process', keys: ['pid', 'name', 'exe', 'uid', 'parent_pid', 'parent_name'] },
+        { title: 'Execution', keys: ['cmdline', 'cpu_usage', 'reason', 'matched_pattern', 'detection_method', 'remote_addresses'] }
+    ],
+    anomaly: [
+        { title: 'Detection', keys: ['module_name', 'module_size', 'file_hash', 'login_hour', 'username'] }
+    ]
+};
+
+// Keys whose values should render as monospace code
+var CODE_KEYS = { process_cmdline: 1, cmdline: 1, process_exe: 1, exe: 1, file_hash: 1, request: 1 };
+// Keys whose comma-separated values should render as tag chips
+var TAG_KEYS = { top_source_ips: 1, sample_ports: 1, target_ports: 1, target_ports_full: 1, target_services: 1, top_paths: 1, user_agents: 1, usernames_targeted: 1, top_usernames: 1, remote_addresses: 1 };
+
+function formatDetailKey(key) {
+    return key.replace(/_/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+function formatDetailValue(key, val) {
+    if (val === undefined || val === null || val === '') return '';
+    val = String(val);
+    if (key === 'window_seconds') {
+        var secs = parseInt(val, 10);
+        if (!isNaN(secs)) {
+            if (secs >= 60) return Math.floor(secs / 60) + 'm ' + (secs % 60) + 's';
+            return secs + 's';
+        }
+    }
+    if (key === 'first_attempt' || key === 'last_attempt') {
+        return formatTimeFull(val) || val;
+    }
+    if (key === 'response_bytes') {
+        var bytes = parseInt(val, 10);
+        if (!isNaN(bytes)) {
+            if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+            if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return bytes + ' B';
+        }
+    }
+    return val;
+}
+
+function renderDetailValue(key, val) {
+    var formatted = formatDetailValue(key, val);
+    if (!formatted) return null;
+
+    if (CODE_KEYS[key]) {
+        var code = document.createElement('span');
+        code.className = 'detail-value detail-code';
+        code.textContent = formatted;
+        return code;
+    }
+
+    if (TAG_KEYS[key]) {
+        var container = document.createElement('span');
+        container.className = 'detail-value';
+        var items = formatted.split(',');
+        for (var i = 0; i < items.length; i++) {
+            var item = items[i].trim();
+            if (!item) continue;
+            var tag = document.createElement('span');
+            tag.className = 'detail-tag';
+            tag.textContent = item;
+            container.appendChild(tag);
+        }
+        return container;
+    }
+
+    var span = document.createElement('span');
+    span.className = 'detail-value';
+    span.textContent = formatted;
+    return span;
+}
+
 function showThreatDetail(t) {
     var body = document.createElement('div');
 
-    // Detail grid
+    // Header detail grid (core fields)
     var grid = document.createElement('div');
     grid.className = 'detail-grid';
     var fields = [
@@ -476,27 +630,89 @@ function showThreatDetail(t) {
     descSection.appendChild(descP);
     body.appendChild(descSection);
 
-    // Details key-value
+    // Grouped details sections
     if (t.details && Object.keys(t.details).length > 0) {
-        var detailSection = document.createElement('div');
-        detailSection.className = 'detail-section';
-        var detailH4 = document.createElement('h4');
-        detailH4.textContent = 'Details';
-        detailSection.appendChild(detailH4);
-        var detailGrid = document.createElement('div');
-        detailGrid.className = 'detail-grid';
-        for (var key in t.details) {
-            var dk = document.createElement('span');
-            dk.className = 'detail-label';
-            dk.textContent = key;
-            detailGrid.appendChild(dk);
-            var dv = document.createElement('span');
-            dv.className = 'detail-value';
-            dv.textContent = t.details[key];
-            detailGrid.appendChild(dv);
+        var mod = t.source_module || '';
+        var sections = DETAIL_SECTIONS[mod] || [];
+        var rendered = {};  // track which keys we've rendered
+
+        // Render grouped sections
+        for (var s = 0; s < sections.length; s++) {
+            var sec = sections[s];
+            // Filter to keys that exist in this threat's details
+            var activeKeys = [];
+            for (var k = 0; k < sec.keys.length; k++) {
+                var secKey = sec.keys[k];
+                if (t.details[secKey] !== undefined && t.details[secKey] !== '') {
+                    activeKeys.push(secKey);
+                }
+            }
+            if (activeKeys.length === 0) continue;  // skip empty sections
+
+            var secDiv = document.createElement('div');
+            secDiv.className = 'detail-section';
+            var secH4 = document.createElement('h4');
+            secH4.textContent = sec.title;
+            secDiv.appendChild(secH4);
+            var secGrid = document.createElement('div');
+            secGrid.className = 'detail-grid';
+
+            for (var j = 0; j < activeKeys.length; j++) {
+                var aKey = activeKeys[j];
+                rendered[aKey] = true;
+                var dk = document.createElement('span');
+                dk.className = 'detail-label';
+                dk.textContent = DETAIL_LABELS[aKey] || formatDetailKey(aKey);
+                secGrid.appendChild(dk);
+                var dv = renderDetailValue(aKey, t.details[aKey]);
+                if (dv) {
+                    secGrid.appendChild(dv);
+                } else {
+                    var empty = document.createElement('span');
+                    empty.className = 'detail-value';
+                    empty.textContent = '';
+                    secGrid.appendChild(empty);
+                }
+            }
+            secDiv.appendChild(secGrid);
+            body.appendChild(secDiv);
         }
-        detailSection.appendChild(detailGrid);
-        body.appendChild(detailSection);
+
+        // "Other" section for remaining keys not in any group
+        var otherKeys = [];
+        for (var oKey in t.details) {
+            if (!rendered[oKey] && t.details[oKey] !== undefined && t.details[oKey] !== '') {
+                otherKeys.push(oKey);
+            }
+        }
+        if (otherKeys.length > 0) {
+            var otherDiv = document.createElement('div');
+            otherDiv.className = 'detail-section';
+            var otherH4 = document.createElement('h4');
+            otherH4.textContent = sections.length > 0 ? 'Other' : 'Details';
+            otherDiv.appendChild(otherH4);
+            var otherGrid = document.createElement('div');
+            otherGrid.className = 'detail-grid';
+
+            for (var m = 0; m < otherKeys.length; m++) {
+                var mKey = otherKeys[m];
+                var mLabel = document.createElement('span');
+                mLabel.className = 'detail-label';
+                mLabel.textContent = DETAIL_LABELS[mKey] || formatDetailKey(mKey);
+                otherGrid.appendChild(mLabel);
+                var mVal = renderDetailValue(mKey, t.details[mKey]);
+                if (mVal) {
+                    otherGrid.appendChild(mVal);
+                } else {
+                    var mEmpty = document.createElement('span');
+                    mEmpty.className = 'detail-value';
+                    mEmpty.textContent = '';
+                    otherGrid.appendChild(mEmpty);
+                }
+            }
+            otherDiv.appendChild(otherGrid);
+            body.appendChild(otherDiv);
+        }
     }
 
     // Set modal content using DOM

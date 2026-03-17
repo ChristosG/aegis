@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
@@ -32,8 +32,8 @@ struct AccessLogEntry {
     timestamp: String,
     request: String,
     status: u16,
-    _bytes: u64,
-    _referer: String,
+    bytes: u64,
+    referer: String,
     user_agent: String,
 }
 
@@ -117,8 +117,8 @@ impl WebPatterns {
             timestamp: caps[2].to_string(),
             request: caps[3].to_string(),
             status,
-            _bytes: bytes,
-            _referer: caps[6].to_string(),
+            bytes,
+            referer: caps[6].to_string(),
             user_agent: caps[7].to_string(),
         })
     }
@@ -147,6 +147,30 @@ fn extract_request_path(request: &str) -> &str {
         parts[1]
     } else {
         request
+    }
+}
+
+/// Extract the request method (first token) from a request line like "GET /path HTTP/1.1".
+fn extract_request_method(request: &str) -> &str {
+    request.split_whitespace().next().unwrap_or("-")
+}
+
+/// Format a byte count as a human-readable string (e.g., "1.5 KB", "2.3 MB").
+/// Values <= 1024 are returned as plain integers (e.g., "512").
+fn format_bytes(b: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let bf = b as f64;
+    if bf >= GB {
+        format!("{:.1} GB", bf / GB)
+    } else if bf >= MB {
+        format!("{:.1} MB", bf / MB)
+    } else if bf > KB {
+        format!("{:.1} KB", bf / KB)
+    } else {
+        b.to_string()
     }
 }
 
@@ -275,7 +299,14 @@ impl ScanModule for WebModule {
                         .with_detail("reason", scanner_reason)
                         .with_detail("user_agent", entry.user_agent.clone())
                         .with_detail("request", entry.request.clone())
-                        .with_detail("status", entry.status.to_string());
+                        .with_detail("status", entry.status.to_string())
+                        .with_detail(
+                            "request_method",
+                            extract_request_method(&entry.request).to_string(),
+                        )
+                        .with_detail("request_path", request_path.to_string())
+                        .with_detail("referer", entry.referer.clone())
+                        .with_detail("response_bytes", format_bytes(entry.bytes));
 
                     if let Ok(ip) = entry.ip.parse::<IpAddr>() {
                         event = event.with_source_ip(ip);
@@ -296,7 +327,14 @@ impl ScanModule for WebModule {
                 let mut event = ThreatEvent::new(ThreatType::SqlInjection, "web", description)
                     .with_detail("request", entry.request.clone())
                     .with_detail("user_agent", entry.user_agent.clone())
-                    .with_detail("status", entry.status.to_string());
+                    .with_detail("status", entry.status.to_string())
+                    .with_detail(
+                        "request_method",
+                        extract_request_method(&entry.request).to_string(),
+                    )
+                    .with_detail("request_path", request_path.to_string())
+                    .with_detail("referer", entry.referer.clone())
+                    .with_detail("response_bytes", format_bytes(entry.bytes));
 
                 if let Ok(ip) = entry.ip.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -316,7 +354,14 @@ impl ScanModule for WebModule {
                 let mut event = ThreatEvent::new(ThreatType::PathTraversal, "web", description)
                     .with_detail("request", entry.request.clone())
                     .with_detail("user_agent", entry.user_agent.clone())
-                    .with_detail("status", entry.status.to_string());
+                    .with_detail("status", entry.status.to_string())
+                    .with_detail(
+                        "request_method",
+                        extract_request_method(&entry.request).to_string(),
+                    )
+                    .with_detail("request_path", request_path.to_string())
+                    .with_detail("referer", entry.referer.clone())
+                    .with_detail("response_bytes", format_bytes(entry.bytes));
 
                 if let Ok(ip) = entry.ip.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -334,6 +379,8 @@ impl ScanModule for WebModule {
         let mut ip_timestamps: HashMap<String, Vec<i64>> = HashMap::new();
         let mut ip_request_count: HashMap<String, u64> = HashMap::new();
         let mut ip_ht_count: HashMap<String, u64> = HashMap::new();
+        let mut ip_paths: HashMap<String, HashMap<String, u32>> = HashMap::new();
+        let mut ip_user_agents: HashMap<String, HashSet<String>> = HashMap::new();
 
         for entry in &all_entries {
             let request_path = entry.request.split_whitespace().nth(1).unwrap_or("");
@@ -350,6 +397,17 @@ impl ScanModule for WebModule {
             if let Some(ts) = parse_nginx_timestamp(&entry.timestamp) {
                 ip_timestamps.entry(entry.ip.clone()).or_default().push(ts);
             }
+
+            // Track paths and user agents per IP for DDoS enrichment
+            *ip_paths
+                .entry(entry.ip.clone())
+                .or_default()
+                .entry(request_path.to_string())
+                .or_insert(0) += 1;
+            ip_user_agents
+                .entry(entry.ip.clone())
+                .or_default()
+                .insert(entry.user_agent.clone());
         }
 
         // Check normal-path requests against standard threshold
@@ -403,6 +461,41 @@ impl ScanModule for WebModule {
                 let mut event = ThreatEvent::new(ThreatType::WebDdos, "web", description)
                     .with_detail("request_count", count.to_string())
                     .with_detail("threshold", effective_threshold.to_string());
+
+                // Enrich with top paths
+                if let Some(paths) = ip_paths.get(*ip_str) {
+                    let mut path_vec: Vec<(&String, &u32)> = paths.iter().collect();
+                    path_vec.sort_by(|a, b| b.1.cmp(a.1));
+                    let top_paths: Vec<String> = path_vec
+                        .iter()
+                        .take(5)
+                        .map(|(p, c)| format!("{} ({})", p, c))
+                        .collect();
+                    event = event.with_detail("top_paths", top_paths.join(", "));
+                }
+
+                // Enrich with unique user agents
+                if let Some(agents) = ip_user_agents.get(*ip_str) {
+                    let ua_list: Vec<&String> = agents.iter().take(5).collect();
+                    let ua_str: Vec<&str> = ua_list.iter().map(|s| s.as_str()).collect();
+                    event = event.with_detail("user_agents", ua_str.join(", "));
+                }
+
+                // Enrich with time window and RPM
+                if let Some(timestamps) = ip_timestamps.get(*ip_str) {
+                    if timestamps.len() >= 2 {
+                        let min_ts = *timestamps.iter().min().unwrap();
+                        let max_ts = *timestamps.iter().max().unwrap();
+                        let window_secs = max_ts - min_ts;
+                        event =
+                            event.with_detail("time_window", format!("{}s", window_secs));
+                        if window_secs > 0 {
+                            let rpm = (total_count as f64 / window_secs as f64) * 60.0;
+                            event = event
+                                .with_detail("requests_per_minute", format!("{:.1}", rpm));
+                        }
+                    }
+                }
 
                 if let Ok(ip) = ip_str.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -666,5 +759,23 @@ mod tests {
         assert!(ts.is_some());
         // 2023-10-10 13:55:36 UTC = 1696946136
         assert_eq!(ts.unwrap(), 1696946136);
+    }
+
+    #[test]
+    fn test_extract_request_method() {
+        assert_eq!(extract_request_method("GET /index.html HTTP/1.1"), "GET");
+        assert_eq!(extract_request_method("POST /api/login HTTP/1.1"), "POST");
+        assert_eq!(extract_request_method(""), "-");
+    }
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(0), "0");
+        assert_eq!(format_bytes(512), "512");
+        assert_eq!(format_bytes(1024), "1024");
+        assert_eq!(format_bytes(1025), "1.0 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(1_048_576), "1.0 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
     }
 }

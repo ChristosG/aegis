@@ -30,6 +30,61 @@ pub struct NetworkModule {
     config: NetworkConfig,
 }
 
+/// Look up the exe path and full command line for a given PID.
+fn get_process_details(pid: u32) -> (Option<String>, String) {
+    let exe = std::fs::read_link(format!("/proc/{}/exe", pid))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    let cmdline = std::fs::read_to_string(format!("/proc/{}/cmdline", pid))
+        .unwrap_or_default()
+        .replace('\0', " ")
+        .trim()
+        .to_string();
+    (exe, cmdline)
+}
+
+/// Truncate a string to `max` bytes on a valid UTF-8 boundary, appending "..." if truncated.
+fn truncate_cmdline(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    // Walk backwards from max to find a char boundary
+    let mut end = max;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
+}
+
+/// Map well-known ports to service names.
+fn port_to_service(port: u16) -> Option<&'static str> {
+    match port {
+        20 => Some("ftp-data"),
+        21 => Some("ftp"),
+        22 => Some("ssh"),
+        23 => Some("telnet"),
+        25 => Some("smtp"),
+        53 => Some("dns"),
+        80 => Some("http"),
+        110 => Some("pop3"),
+        143 => Some("imap"),
+        443 => Some("https"),
+        465 => Some("smtps"),
+        587 => Some("submission"),
+        993 => Some("imaps"),
+        995 => Some("pop3s"),
+        3306 => Some("mysql"),
+        3389 => Some("rdp"),
+        5432 => Some("postgresql"),
+        5900 => Some("vnc"),
+        6379 => Some("redis"),
+        8080 => Some("http-alt"),
+        8443 => Some("https-alt"),
+        27017 => Some("mongodb"),
+        _ => None,
+    }
+}
+
 impl NetworkModule {
     pub fn new(config: NetworkConfig) -> Self {
         Self { config }
@@ -93,14 +148,16 @@ impl NetworkModule {
     fn detect_syn_flood(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
-        // Count connections in SYN_RECV state and track source IPs
+        // Count connections in SYN_RECV state and track source IPs + target ports
         let mut source_ip_counts: HashMap<IpAddr, u32> = HashMap::new();
         let mut syn_recv_count: u32 = 0;
+        let mut target_ports: std::collections::HashSet<u16> = std::collections::HashSet::new();
 
         for conn in connections {
             if conn.state == tcp_state::SYN_RECV {
                 syn_recv_count += 1;
                 *source_ip_counts.entry(conn.remote_ip).or_insert(0) += 1;
+                target_ports.insert(conn.local_port);
             }
         }
 
@@ -121,10 +178,19 @@ impl NetworkModule {
                 syn_recv_count, self.config.syn_flood_threshold
             );
 
+            let mut sorted_ports: Vec<u16> = target_ports.into_iter().collect();
+            sorted_ports.sort();
+            let target_ports_str = sorted_ports
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+
             let mut event = ThreatEvent::new(ThreatType::SynFlood, "network", &description)
                 .with_detail("syn_recv_count", syn_recv_count.to_string())
                 .with_detail("threshold", self.config.syn_flood_threshold.to_string())
-                .with_detail("top_source_ips", &top_ips_str);
+                .with_detail("top_source_ips", &top_ips_str)
+                .with_detail("target_ports", &target_ports_str);
 
             // Set source IP to the top offender if available
             if let Some((top_ip, _)) = top_sources.first() {
@@ -177,6 +243,8 @@ impl NetworkModule {
             if port_count > self.config.port_scan_threshold {
                 let mut ports_list: Vec<u16> = local_ports.iter().copied().collect();
                 ports_list.sort();
+
+                // Sample ports (first 20) for the sample field
                 let ports_str = ports_list
                     .iter()
                     .take(20)
@@ -184,16 +252,37 @@ impl NetworkModule {
                     .collect::<Vec<_>>()
                     .join(", ");
 
+                // Full ports list capped at 100
+                let full_ports_str = ports_list
+                    .iter()
+                    .take(100)
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                // Map well-known ports to service names
+                let services: Vec<String> = ports_list
+                    .iter()
+                    .filter_map(|p| port_to_service(*p).map(|s| format!("{}({})", s, p)))
+                    .collect();
+                let services_str = services.join(", ");
+
                 let description = format!(
                     "Port scan detected from {}: {} unique ports probed (threshold: {})",
                     remote_ip, port_count, self.config.port_scan_threshold
                 );
 
-                let event = ThreatEvent::new(ThreatType::PortScan, "network", &description)
-                    .with_source_ip(*remote_ip)
-                    .with_detail("unique_ports", port_count.to_string())
-                    .with_detail("threshold", self.config.port_scan_threshold.to_string())
-                    .with_detail("sample_ports", &ports_str);
+                let mut event =
+                    ThreatEvent::new(ThreatType::PortScan, "network", &description)
+                        .with_source_ip(*remote_ip)
+                        .with_detail("unique_ports", port_count.to_string())
+                        .with_detail("threshold", self.config.port_scan_threshold.to_string())
+                        .with_detail("sample_ports", &ports_str)
+                        .with_detail("target_ports_full", &full_ports_str);
+
+                if !services_str.is_empty() {
+                    event = event.with_detail("target_services", &services_str);
+                }
 
                 warn!(
                     remote_ip = %remote_ip,
@@ -209,7 +298,11 @@ impl NetworkModule {
     }
 
     /// Detect suspicious outbound connections to non-standard ports on public IPs.
-    fn detect_suspicious_outbound(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+    fn detect_suspicious_outbound(
+        &self,
+        connections: &[TcpConnection],
+        inode_map: &HashMap<u64, (u32, String)>,
+    ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
         for conn in connections {
@@ -238,11 +331,29 @@ impl NetworkModule {
                 conn.remote_ip, conn.remote_port
             );
 
-            let event = ThreatEvent::new(ThreatType::SuspiciousConnection, "network", &description)
-                .with_source_ip(conn.remote_ip)
-                .with_target(format!("{}:{}", conn.remote_ip, conn.remote_port))
-                .with_detail("local_port", conn.local_port.to_string())
-                .with_detail("remote_port", conn.remote_port.to_string());
+            let mut event =
+                ThreatEvent::new(ThreatType::SuspiciousConnection, "network", &description)
+                    .with_source_ip(conn.remote_ip)
+                    .with_target(format!("{}:{}", conn.remote_ip, conn.remote_port))
+                    .with_detail("local_port", conn.local_port.to_string())
+                    .with_detail("remote_port", conn.remote_port.to_string());
+
+            // Enrich with process details from the inode map
+            if conn.inode != 0 {
+                if let Some((pid, name)) = inode_map.get(&conn.inode) {
+                    let (exe, cmdline) = get_process_details(*pid);
+                    event = event
+                        .with_detail("process_name", name.clone())
+                        .with_detail("process_pid", pid.to_string());
+                    if let Some(exe_path) = exe {
+                        event = event.with_detail("process_exe", exe_path);
+                    }
+                    if !cmdline.is_empty() {
+                        event =
+                            event.with_detail("process_cmdline", truncate_cmdline(&cmdline, 500));
+                    }
+                }
+            }
 
             debug!(
                 remote_ip = %conn.remote_ip,
@@ -259,11 +370,15 @@ impl NetworkModule {
 
     /// Detect potential C2 beacon patterns by looking for multiple connections
     /// to the same remote IP:port.
-    fn detect_c2_beacon(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+    fn detect_c2_beacon(
+        &self,
+        connections: &[TcpConnection],
+        inode_map: &HashMap<u64, (u32, String)>,
+    ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
-        // Count ESTABLISHED connections to each remote IP:port pair
-        let mut endpoint_counts: HashMap<(IpAddr, u16), u32> = HashMap::new();
+        // Count ESTABLISHED connections to each remote IP:port pair, with a representative inode
+        let mut endpoint_counts: HashMap<(IpAddr, u16), (u32, u64)> = HashMap::new();
 
         for conn in connections {
             if conn.state != tcp_state::ESTABLISHED {
@@ -274,23 +389,45 @@ impl NetworkModule {
                 continue;
             }
 
-            *endpoint_counts
+            let entry = endpoint_counts
                 .entry((conn.remote_ip, conn.remote_port))
-                .or_insert(0) += 1;
+                .or_insert((0, 0));
+            entry.0 += 1;
+            // Store the inode from the first connection as the representative
+            if entry.1 == 0 && conn.inode != 0 {
+                entry.1 = conn.inode;
+            }
         }
 
-        for ((remote_ip, remote_port), count) in &endpoint_counts {
+        for ((remote_ip, remote_port), (count, repr_inode)) in &endpoint_counts {
             if *count > self.config.c2_beacon_threshold {
                 let description = format!(
                     "Potential C2 beacon: {} connections to {}:{} (threshold: {})",
                     count, remote_ip, remote_port, self.config.c2_beacon_threshold
                 );
 
-                let event = ThreatEvent::new(ThreatType::C2Beacon, "network", &description)
+                let mut event = ThreatEvent::new(ThreatType::C2Beacon, "network", &description)
                     .with_source_ip(*remote_ip)
                     .with_target(format!("{}:{}", remote_ip, remote_port))
                     .with_detail("connection_count", count.to_string())
                     .with_detail("threshold", self.config.c2_beacon_threshold.to_string());
+
+                // Enrich with process details from the representative inode
+                if *repr_inode != 0 {
+                    if let Some((pid, name)) = inode_map.get(repr_inode) {
+                        let (exe, cmdline) = get_process_details(*pid);
+                        event = event
+                            .with_detail("process_name", name.clone())
+                            .with_detail("process_pid", pid.to_string());
+                        if let Some(exe_path) = exe {
+                            event = event.with_detail("process_exe", exe_path);
+                        }
+                        if !cmdline.is_empty() {
+                            event = event
+                                .with_detail("process_cmdline", truncate_cmdline(&cmdline, 500));
+                        }
+                    }
+                }
 
                 warn!(
                     remote_ip = %remote_ip,
@@ -307,28 +444,37 @@ impl NetworkModule {
     }
 
     /// D1: Detect connection rate exceeded per source IP.
-    fn detect_connection_rate(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+    fn detect_connection_rate(
+        &self,
+        connections: &[TcpConnection],
+        inode_map: &HashMap<u64, (u32, String)>,
+    ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
         if self.config.connection_rate_threshold == 0 {
             return threats;
         }
 
-        // Count all connections per remote IP (not just ESTABLISHED)
-        let mut ip_counts: HashMap<IpAddr, u32> = HashMap::new();
+        // Count all connections per remote IP (not just ESTABLISHED), with a representative inode
+        let mut ip_counts: HashMap<IpAddr, (u32, u64)> = HashMap::new();
         for conn in connections {
             if is_private(&conn.remote_ip) {
                 continue;
             }
-            *ip_counts.entry(conn.remote_ip).or_insert(0) += 1;
+            let entry = ip_counts.entry(conn.remote_ip).or_insert((0, 0));
+            entry.0 += 1;
+            // Store the inode from the first connection as the representative
+            if entry.1 == 0 && conn.inode != 0 {
+                entry.1 = conn.inode;
+            }
         }
 
-        for (ip, count) in &ip_counts {
+        for (ip, (count, repr_inode)) in &ip_counts {
             if *count > self.config.connection_rate_threshold {
                 let description = format!(
                     "Connection rate exceeded from {}: {} connections (threshold: {})",
                     ip, count, self.config.connection_rate_threshold
                 );
-                let event =
+                let mut event =
                     ThreatEvent::new(ThreatType::ConnectionRateExceeded, "network", &description)
                         .with_source_ip(*ip)
                         .with_detail("connection_count", count.to_string())
@@ -336,6 +482,23 @@ impl NetworkModule {
                             "threshold",
                             self.config.connection_rate_threshold.to_string(),
                         );
+
+                // Enrich with process details from the representative inode
+                if *repr_inode != 0 {
+                    if let Some((pid, name)) = inode_map.get(repr_inode) {
+                        let (exe, cmdline) = get_process_details(*pid);
+                        event = event
+                            .with_detail("process_name", name.clone())
+                            .with_detail("process_pid", pid.to_string());
+                        if let Some(exe_path) = exe {
+                            event = event.with_detail("process_exe", exe_path);
+                        }
+                        if !cmdline.is_empty() {
+                            event = event
+                                .with_detail("process_cmdline", truncate_cmdline(&cmdline, 500));
+                        }
+                    }
+                }
 
                 warn!(
                     ip = %ip,
@@ -349,8 +512,8 @@ impl NetworkModule {
         threats
     }
 
-    /// Build a map from socket inode → process name by scanning /proc/<pid>/fd/.
-    fn build_inode_to_process_map(&self) -> HashMap<u64, String> {
+    /// Build a map from socket inode → (pid, process_name) by scanning /proc/<pid>/fd/.
+    fn build_inode_to_process_map(&self) -> HashMap<u64, (u32, String)> {
         let mut map = HashMap::new();
         let pids = crate::util::proc_parse::list_pids();
         for pid in pids {
@@ -359,7 +522,6 @@ impl NetworkModule {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            let mut has_socket = false;
             for entry in entries.flatten() {
                 if let Ok(target) = std::fs::read_link(entry.path()) {
                     let target_str = target.to_string_lossy();
@@ -368,14 +530,13 @@ impl NetworkModule {
                         .and_then(|s| s.strip_suffix(']'))
                     {
                         if let Ok(inode) = inode_str.parse::<u64>() {
-                            if !has_socket {
-                                has_socket = true;
-                            }
                             map.entry(inode).or_insert_with(|| {
-                                std::fs::read_to_string(format!("/proc/{}/comm", pid))
-                                    .unwrap_or_default()
-                                    .trim()
-                                    .to_string()
+                                let name =
+                                    std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                                        .unwrap_or_default()
+                                        .trim()
+                                        .to_string();
+                                (pid, name)
                             });
                         }
                     }
@@ -386,7 +547,11 @@ impl NetworkModule {
     }
 
     /// D4: Detect new outbound destinations not seen in baseline.
-    fn detect_new_outbound_destinations(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+    fn detect_new_outbound_destinations(
+        &self,
+        connections: &[TcpConnection],
+        inode_map: &HashMap<u64, (u32, String)>,
+    ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
         let data_dir = crate::config::defaults::resolve_path("~/.aegis");
@@ -424,24 +589,18 @@ impl NetworkModule {
         };
 
         if !baseline.is_empty() {
-            // Only build the process map if we have new destinations to report
             let new_dests: Vec<_> = current_destinations
                 .iter()
                 .filter(|d| !baseline.contains(*d))
                 .collect();
 
-            let inode_map = if !new_dests.is_empty() {
-                self.build_inode_to_process_map()
-            } else {
-                HashMap::new()
-            };
-
             for (dest_ip, dest_port) in &new_dests {
-                // Resolve process name from inode
-                let process_name = dest_to_inode
+                // Resolve process info from inode using the shared inode map
+                let proc_info = dest_to_inode
                     .get(&(dest_ip.clone(), *dest_port))
-                    .and_then(|inode| inode_map.get(inode))
-                    .cloned();
+                    .and_then(|inode| inode_map.get(inode));
+
+                let process_name = proc_info.map(|(_, name)| name.clone());
 
                 let description = match &process_name {
                     Some(name) => format!(
@@ -456,8 +615,18 @@ impl NetworkModule {
                         .with_target(format!("{}:{}", dest_ip, dest_port))
                         .with_detail("dest_port", dest_port.to_string());
 
-                if let Some(name) = &process_name {
-                    event = event.with_detail("process", name.clone());
+                if let Some((pid, name)) = proc_info {
+                    event = event
+                        .with_detail("process", name.clone())
+                        .with_detail("process_pid", pid.to_string());
+                    let (exe, cmdline) = get_process_details(*pid);
+                    if let Some(exe_path) = exe {
+                        event = event.with_detail("process_exe", exe_path);
+                    }
+                    if !cmdline.is_empty() {
+                        event =
+                            event.with_detail("process_cmdline", truncate_cmdline(&cmdline, 500));
+                    }
                 }
 
                 if let Ok(ip) = dest_ip.parse() {
@@ -507,13 +676,16 @@ impl ScanModule for NetworkModule {
 
         let mut threats = Vec::new();
 
+        // Build the inode→(pid, name) map once for all detectors that need process resolution
+        let inode_map = self.build_inode_to_process_map();
+
         // Run all detectors
         threats.extend(self.detect_syn_flood(&connections));
         threats.extend(self.detect_port_scan(&connections));
-        threats.extend(self.detect_suspicious_outbound(&connections));
-        threats.extend(self.detect_c2_beacon(&connections));
-        threats.extend(self.detect_connection_rate(&connections));
-        threats.extend(self.detect_new_outbound_destinations(&connections));
+        threats.extend(self.detect_suspicious_outbound(&connections, &inode_map));
+        threats.extend(self.detect_c2_beacon(&connections, &inode_map));
+        threats.extend(self.detect_connection_rate(&connections, &inode_map));
+        threats.extend(self.detect_new_outbound_destinations(&connections, &inode_map));
 
         info!(count = threats.len(), "Network scan complete");
         Ok(threats)

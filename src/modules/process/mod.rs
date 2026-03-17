@@ -54,6 +54,35 @@ const MINER_CMDLINE_PATTERNS: &[&str] = &[
     "ethash",
 ];
 
+/// Get the parent PID from /proc/[pid]/stat.
+fn get_parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let close_paren = stat.rfind(')')?;
+    let after_comm = &stat[close_paren + 2..];
+    let fields: Vec<&str> = after_comm.split_whitespace().collect();
+    // Field 0=state, 1=ppid
+    fields.get(1)?.parse().ok()
+}
+
+/// Get a process name by PID from /proc/[pid]/comm.
+fn get_process_name(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{}/comm", pid))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Enrich a threat event with parent process info.
+fn enrich_with_parent(mut event: ThreatEvent, pid: u32) -> ThreatEvent {
+    if let Some(ppid) = get_parent_pid(pid) {
+        event = event.with_detail("parent_pid", ppid.to_string());
+        if let Some(pname) = get_process_name(ppid) {
+            event = event.with_detail("parent_name", pname);
+        }
+    }
+    event
+}
+
 /// Process scanning module: detects crypto miners, reverse shells, and
 /// suspicious binaries running from temp directories.
 pub struct ProcessModule {
@@ -206,6 +235,7 @@ impl ProcessModule {
                     .with_detail("cpu_usage", &cpu_str)
                     .with_detail("uid", proc.uid.to_string())
                     .with_detail("cmdline", truncate_string(&cmdline_joined, 500));
+                let event = enrich_with_parent(event, proc.pid);
 
                 debug!(
                     pid = proc.pid,
@@ -340,6 +370,7 @@ impl ProcessModule {
                     .with_detail("matched_pattern", &matched_pattern)
                     .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("detection_method", "cmdline_pattern");
+                let event = enrich_with_parent(event, proc.pid);
 
                 debug!(
                     pid = proc.pid,
@@ -381,6 +412,7 @@ impl ProcessModule {
                         .with_detail("uid", proc.uid.to_string())
                         .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                         .with_detail("detection_method", "socket_fd");
+                    let event = enrich_with_parent(event, proc.pid);
 
                     debug!(
                         pid = proc.pid,
@@ -492,6 +524,7 @@ impl ProcessModule {
                     .with_detail("uid", proc.uid.to_string())
                     .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("reason", &reason);
+                let event = enrich_with_parent(event, proc.pid);
 
                 debug!(
                     pid = proc.pid,

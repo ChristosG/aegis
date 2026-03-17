@@ -28,10 +28,10 @@ impl AuthModule {
 /// Parsed representation of a single auth log entry.
 #[derive(Debug)]
 enum AuthEvent {
-    FailedLogin { username: String, ip: String },
-    AcceptedLogin { username: String, ip: String },
+    FailedLogin { username: String, ip: String, port: String },
+    AcceptedLogin { username: String, ip: String, port: String, method: String },
     InvalidUser { username: String, ip: String },
-    RootLogin { ip: String },
+    RootLogin { ip: String, method: String, port: String },
 }
 
 /// Compiled set of regexes for auth log parsing.
@@ -51,11 +51,12 @@ impl AuthPatterns {
             )
             .expect("failed password regex"),
             accepted: Regex::new(
-                r"Accepted (?:password|publickey) for (\S+) from (\S+) port (\d+)",
+                r"Accepted (password|publickey) for (\S+) from (\S+) port (\d+)",
             )
             .expect("accepted password regex"),
             invalid_user: Regex::new(r"Invalid user (\S+) from (\S+)").expect("invalid user regex"),
-            root_login: Regex::new(r"Accepted .+ for root from (\S+)").expect("root login regex"),
+            root_login: Regex::new(r"Accepted (password|publickey) for root from (\S+) port (\d+)")
+                .expect("root login regex"),
             syslog_ts: Regex::new(r"^(\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})")
                 .expect("syslog timestamp regex"),
         }
@@ -91,18 +92,23 @@ impl AuthPatterns {
 
         // Check for root login first (before generic accepted) so we capture it specifically.
         if let Some(caps) = self.root_login.captures(line) {
-            let ip = caps[1].to_string();
-            events.push(AuthEvent::RootLogin { ip });
+            let method = caps[1].to_string();
+            let ip = caps[2].to_string();
+            let port = caps[3].to_string();
+            events.push(AuthEvent::RootLogin { ip, method, port });
         }
 
         if let Some(caps) = self.failed.captures(line) {
             let username = caps[1].to_string();
             let ip = caps[2].to_string();
-            events.push(AuthEvent::FailedLogin { username, ip });
+            let port = caps[3].to_string();
+            events.push(AuthEvent::FailedLogin { username, ip, port });
         } else if let Some(caps) = self.accepted.captures(line) {
-            let username = caps[1].to_string();
-            let ip = caps[2].to_string();
-            events.push(AuthEvent::AcceptedLogin { username, ip });
+            let method = caps[1].to_string();
+            let username = caps[2].to_string();
+            let ip = caps[3].to_string();
+            let port = caps[4].to_string();
+            events.push(AuthEvent::AcceptedLogin { username, ip, port, method });
         } else if let Some(caps) = self.invalid_user.captures(line) {
             let username = caps[1].to_string();
             let ip = caps[2].to_string();
@@ -144,13 +150,13 @@ impl ScanModule for AuthModule {
         let cursor_path = LogCursors::path_for_module("auth", &self.data_dir);
         let mut cursors = LogCursors::load(&cursor_path);
 
-        // Track failed attempts per IP: ip -> list of (username, timestamp)
-        let mut failed_by_ip: HashMap<String, Vec<(String, Option<DateTime<Utc>>)>> =
+        // Track failed attempts per IP: ip -> list of (username, port, timestamp)
+        let mut failed_by_ip: HashMap<String, Vec<(String, String, Option<DateTime<Utc>>)>> =
             HashMap::new();
-        // Track successful logins: (username, ip)
-        let mut successful_logins: Vec<(String, String)> = Vec::new();
-        // Track root logins
-        let mut root_login_ips: Vec<String> = Vec::new();
+        // Track successful logins: (username, ip, port, method)
+        let mut successful_logins: Vec<(String, String, String, String)> = Vec::new();
+        // Track root logins: (ip, method, port)
+        let mut root_login_ips: Vec<(String, String, String)> = Vec::new();
         // Track IPs we've already seen for dedup of root login alerts
         let mut root_alerted: HashSet<String> = HashSet::new();
 
@@ -174,18 +180,21 @@ impl ScanModule for AuthModule {
                 let events = patterns.parse_line(line);
                 for event in events {
                     match event {
-                        AuthEvent::FailedLogin { username, ip } => {
-                            failed_by_ip.entry(ip).or_default().push((username, ts));
+                        AuthEvent::FailedLogin { username, ip, port } => {
+                            failed_by_ip.entry(ip).or_default().push((username, port, ts));
                         }
-                        AuthEvent::AcceptedLogin { username, ip } => {
-                            successful_logins.push((username, ip));
+                        AuthEvent::AcceptedLogin { username, ip, port, method } => {
+                            successful_logins.push((username, ip, port, method));
                         }
                         AuthEvent::InvalidUser { username, ip } => {
                             // Count invalid user attempts as failed logins too
-                            failed_by_ip.entry(ip).or_default().push((username, ts));
+                            failed_by_ip
+                                .entry(ip)
+                                .or_default()
+                                .push((username, String::new(), ts));
                         }
-                        AuthEvent::RootLogin { ip } => {
-                            root_login_ips.push(ip);
+                        AuthEvent::RootLogin { ip, method, port } => {
+                            root_login_ips.push((ip, method, port));
                         }
                     }
                 }
@@ -199,14 +208,14 @@ impl ScanModule for AuthModule {
         for (ip_str, entries) in &failed_by_ip {
             // Find the latest timestamp in this batch to use as reference point.
             // This handles both real-time and historical log analysis correctly.
-            let latest_ts = entries.iter().filter_map(|(_, ts)| *ts).max();
+            let latest_ts = entries.iter().filter_map(|(_, _, ts)| *ts).max();
 
             // Filter entries to only those within brute_force_window of the latest entry.
             // If no timestamps are parseable, include all entries conservatively.
-            let in_window: Vec<&(String, Option<DateTime<Utc>>)> = match latest_ts {
+            let in_window: Vec<&(String, String, Option<DateTime<Utc>>)> = match latest_ts {
                 Some(latest) => entries
                     .iter()
-                    .filter(|(_, ts)| match ts {
+                    .filter(|(_, _, ts)| match ts {
                         Some(t) => latest - *t <= window,
                         None => true,
                     })
@@ -217,8 +226,18 @@ impl ScanModule for AuthModule {
             let count = in_window.len();
             if count >= threshold {
                 let unique_users: HashSet<&str> =
-                    in_window.iter().map(|(u, _)| u.as_str()).collect();
-                let users_sample: Vec<&str> = unique_users.iter().take(10).copied().collect();
+                    in_window.iter().map(|(u, _, _)| u.as_str()).collect();
+                let users_sample: Vec<&str> = unique_users.iter().take(20).copied().collect();
+
+                // Determine the target port from the first entry with a non-empty port
+                let target_port = in_window
+                    .iter()
+                    .map(|(_, p, _)| p.as_str())
+                    .find(|p| !p.is_empty())
+                    .unwrap_or("22");
+
+                // Compute attack window timestamps
+                let earliest_ts_in_window = in_window.iter().filter_map(|(_, _, ts)| *ts).min();
 
                 let description = format!(
                     "SSH brute force detected: {} failed attempts from {}",
@@ -228,7 +247,18 @@ impl ScanModule for AuthModule {
                 let mut event = ThreatEvent::new(ThreatType::BruteForce, "auth", description)
                     .with_detail("failed_count", count.to_string())
                     .with_detail("usernames_targeted", users_sample.join(", "))
-                    .with_detail("threshold", threshold.to_string());
+                    .with_detail("threshold", threshold.to_string())
+                    .with_detail("unique_usernames_count", unique_users.len().to_string())
+                    .with_detail("target_port", target_port.to_string());
+
+                // Add window duration and edge timestamps if we have timestamps
+                if let (Some(earliest), Some(latest)) = (earliest_ts_in_window, latest_ts) {
+                    let window_secs = (latest - earliest).num_seconds();
+                    event = event
+                        .with_detail("window_seconds", window_secs.to_string())
+                        .with_detail("first_attempt", earliest.to_rfc3339())
+                        .with_detail("last_attempt", latest.to_rfc3339());
+                }
 
                 if let Ok(ip) = ip_str.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -242,7 +272,7 @@ impl ScanModule for AuthModule {
 
         // --- Root Login Detection ---
         if self.config.alert_root_login {
-            for ip_str in &root_login_ips {
+            for (ip_str, method, port) in &root_login_ips {
                 if root_alerted.contains(ip_str) {
                     continue;
                 }
@@ -251,7 +281,9 @@ impl ScanModule for AuthModule {
                 let description = format!("Root login accepted from {}", ip_str);
 
                 let mut event = ThreatEvent::new(ThreatType::RootLogin, "auth", description)
-                    .with_target("root");
+                    .with_target("root")
+                    .with_detail("auth_method", method.clone())
+                    .with_detail("target_port", port.clone());
 
                 if let Ok(ip) = ip_str.parse::<IpAddr>() {
                     event = event.with_source_ip(ip);
@@ -265,7 +297,7 @@ impl ScanModule for AuthModule {
         // In scan mode, report successful logins from non-private IPs as informational.
         if self.config.alert_new_ip {
             let mut seen_login_ips: HashSet<String> = HashSet::new();
-            for (username, ip_str) in &successful_logins {
+            for (username, ip_str, port, method) in &successful_logins {
                 // Deduplicate by IP within this scan
                 if seen_login_ips.contains(ip_str) {
                     continue;
@@ -283,7 +315,9 @@ impl ScanModule for AuthModule {
                             .with_severity(ThreatSeverity::Info)
                             .with_source_ip(ip)
                             .with_target(username.as_str())
-                            .with_detail("login_type", "external_ip");
+                            .with_detail("login_type", "external_ip")
+                            .with_detail("auth_method", method.clone())
+                            .with_detail("target_port", port.clone());
 
                         threats.push(event);
                     }
@@ -317,8 +351,8 @@ mod tests {
         let events = patterns.parse_line(line);
         assert!(events
             .iter()
-            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip }
-            if username == "admin" && ip == "192.168.1.100")));
+            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
+            if username == "admin" && ip == "192.168.1.100" && port == "22")));
     }
 
     #[test]
@@ -328,8 +362,8 @@ mod tests {
         let events = patterns.parse_line(line);
         assert!(events
             .iter()
-            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip }
-            if username == "test" && ip == "10.0.0.5")));
+            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
+            if username == "test" && ip == "10.0.0.5" && port == "2222")));
     }
 
     #[test]
@@ -340,8 +374,8 @@ mod tests {
         let events = patterns.parse_line(line);
         assert!(events
             .iter()
-            .any(|e| matches!(e, AuthEvent::AcceptedLogin { username, ip }
-            if username == "admin" && ip == "10.0.0.1")));
+            .any(|e| matches!(e, AuthEvent::AcceptedLogin { username, ip, port, method }
+            if username == "admin" && ip == "10.0.0.1" && port == "22" && method == "password")));
     }
 
     #[test]
@@ -351,8 +385,8 @@ mod tests {
         let events = patterns.parse_line(line);
         assert!(events
             .iter()
-            .any(|e| matches!(e, AuthEvent::AcceptedLogin { username, ip }
-            if username == "deploy" && ip == "203.0.113.5")));
+            .any(|e| matches!(e, AuthEvent::AcceptedLogin { username, ip, port, method }
+            if username == "deploy" && ip == "203.0.113.5" && port == "44100" && method == "publickey")));
     }
 
     #[test]
@@ -374,7 +408,8 @@ mod tests {
         let events = patterns.parse_line(line);
         assert!(events
             .iter()
-            .any(|e| matches!(e, AuthEvent::RootLogin { ip } if ip == "45.33.32.156")));
+            .any(|e| matches!(e, AuthEvent::RootLogin { ip, method, port }
+            if ip == "45.33.32.156" && method == "password" && port == "22")));
     }
 
     #[test]
@@ -410,6 +445,11 @@ mod tests {
             .find(|t| t.threat_type == ThreatType::BruteForce)
             .unwrap();
         assert_eq!(bf.details.get("failed_count").unwrap(), "10");
+        assert_eq!(bf.details.get("target_port").unwrap(), "22");
+        assert_eq!(bf.details.get("unique_usernames_count").unwrap(), "1");
+        assert!(bf.details.contains_key("window_seconds"));
+        assert!(bf.details.contains_key("first_attempt"));
+        assert!(bf.details.contains_key("last_attempt"));
     }
 
     #[test]
@@ -437,6 +477,12 @@ mod tests {
         assert!(threats
             .iter()
             .any(|t| t.threat_type == ThreatType::RootLogin));
+        let rl = threats
+            .iter()
+            .find(|t| t.threat_type == ThreatType::RootLogin)
+            .unwrap();
+        assert_eq!(rl.details.get("auth_method").unwrap(), "password");
+        assert_eq!(rl.details.get("target_port").unwrap(), "22");
     }
 
     #[test]
