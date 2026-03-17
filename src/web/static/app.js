@@ -522,11 +522,30 @@ var DETAIL_SECTIONS = {
     ],
     anomaly: [
         { title: 'Detection', keys: ['module_name', 'module_size', 'file_hash', 'login_hour', 'username'] }
+    ],
+    dns: [
+        { title: 'DNS', keys: ['domain', 'query_type', 'entropy', 'query_count', 'txt_count'] }
+    ],
+    rootkit: [
+        { title: 'Detection', keys: ['detection_method', 'pid', 'process', 'evidence'] },
+        { title: 'Details', keys: ['file', 'libraries', 'suspicious_path', 'symbol', 'pattern', 'ld_preload', 'config_file', 'directory'] }
+    ],
+    ssh_session: [
+        { title: 'Command', keys: ['command', 'pattern', 'source'] }
+    ],
+    tls_fingerprint: [
+        { title: 'TLS', keys: ['ja3_hash', 'ja4_hash', 'fingerprint_match', 'interface'] }
+    ],
+    audit: [
+        { title: 'Compliance', keys: ['check_id', 'remediation'] }
+    ],
+    forensic: [
+        { title: 'Snapshot', keys: ['snapshot_path', 'trigger_threat_id', 'trigger_type'] }
     ]
 };
 
 // Keys whose values should render as monospace code
-var CODE_KEYS = { process_cmdline: 1, cmdline: 1, process_exe: 1, exe: 1, file_hash: 1, request: 1 };
+var CODE_KEYS = { process_cmdline: 1, cmdline: 1, process_exe: 1, exe: 1, file_hash: 1, request: 1, command: 1, ja3_hash: 1, ja4_hash: 1, ld_preload: 1, snapshot_path: 1 };
 // Keys whose comma-separated values should render as tag chips
 var TAG_KEYS = { top_source_ips: 1, sample_ports: 1, target_ports: 1, target_ports_full: 1, target_services: 1, top_paths: 1, user_agents: 1, usernames_targeted: 1, top_usernames: 1, remote_addresses: 1 };
 

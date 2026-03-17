@@ -18,6 +18,23 @@ pub struct AegisConfig {
     pub honeypot: HoneypotConfig,
     pub dashboard: DashboardConfig,
     pub cert: CertConfig,
+    pub ebpf: EbpfConfig,
+    pub dns: DnsConfig,
+    pub container: ContainerConfig,
+    pub rootkit: RootkitConfig,
+    pub ssh_session: SshSessionConfig,
+    pub enrichment: EnrichmentConfig,
+    pub audit: AuditConfig,
+    pub forensic: ForensicConfig,
+    #[cfg(feature = "tls-fingerprint")]
+    #[serde(default)]
+    pub tls_fingerprint: TlsFingerprintConfig,
+    #[cfg(feature = "yara")]
+    #[serde(default)]
+    pub yara: YaraConfig,
+    #[cfg(feature = "server")]
+    #[serde(default)]
+    pub server: ServerConfig,
 }
 
 /// General daemon / runtime settings.
@@ -708,6 +725,325 @@ impl Default for DashboardConfig {
             bind: "127.0.0.1".into(),
             port: 9443,
             token_file: "/etc/aegis/api.token".into(),
+        }
+    }
+}
+
+/// eBPF real-time monitoring configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EbpfConfig {
+    /// Auto-fallback to polling if eBPF/BTF unavailable.
+    pub enabled: bool,
+    /// Trace process execution via execve.
+    pub probe_execve: bool,
+    /// Trace outbound network connections.
+    pub probe_connect: bool,
+    /// Trace file opens (noisy, off by default).
+    pub probe_open: bool,
+    /// Fallback polling interval when eBPF unavailable.
+    pub fallback_poll_secs: u64,
+}
+
+impl Default for EbpfConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            probe_execve: true,
+            probe_connect: true,
+            probe_open: false,
+            fallback_poll_secs: 60,
+        }
+    }
+}
+
+/// DNS monitoring module configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DnsConfig {
+    pub enabled: bool,
+    /// Log files to parse for DNS queries.
+    pub log_paths: Vec<String>,
+    /// Shannon entropy threshold for DGA detection.
+    pub dga_entropy_threshold: f64,
+    /// Minimum domain label length for DGA check.
+    pub dga_min_length: usize,
+    /// Queries per minute per domain to flag tunneling.
+    pub tunnel_query_rate_threshold: u32,
+    /// Domains to never flag.
+    pub whitelist_domains: Vec<String>,
+}
+
+impl Default for DnsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            log_paths: vec!["/var/log/syslog".into()],
+            dga_entropy_threshold: 3.5,
+            dga_min_length: 12,
+            tunnel_query_rate_threshold: 50,
+            whitelist_domains: Vec::new(),
+        }
+    }
+}
+
+/// Container awareness configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContainerConfig {
+    pub enabled: bool,
+    /// Detect container escape attempts.
+    pub detect_escapes: bool,
+    /// Processes allowed to run privileged inside containers.
+    pub privileged_process_whitelist: Vec<String>,
+}
+
+impl Default for ContainerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            detect_escapes: true,
+            privileged_process_whitelist: Vec::new(),
+        }
+    }
+}
+
+/// Rootkit detection module configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RootkitConfig {
+    pub enabled: bool,
+    /// Compare readdir vs kill(pid,0) for hidden processes.
+    pub check_hidden_processes: bool,
+    /// Scan for LD_PRELOAD in process environments.
+    pub check_ld_preload: bool,
+    /// Verify shared library checksums.
+    pub check_shared_libraries: bool,
+    /// Inspect /proc/kallsyms for suspicious hooks.
+    pub check_kernel_symbols: bool,
+    /// Compare readdir vs stat in suspicious directories.
+    pub check_hidden_files: bool,
+    /// Directories to scan for hidden files.
+    pub hidden_files_dirs: Vec<String>,
+}
+
+impl Default for RootkitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_hidden_processes: true,
+            check_ld_preload: true,
+            check_shared_libraries: true,
+            check_kernel_symbols: true,
+            check_hidden_files: true,
+            hidden_files_dirs: vec!["/tmp".into(), "/var/tmp".into(), "/dev/shm".into()],
+        }
+    }
+}
+
+/// SSH session recording and analysis configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SshSessionConfig {
+    pub enabled: bool,
+    /// Auth log paths to monitor for SSH sessions.
+    pub log_paths: Vec<String>,
+    /// Audit log path for EXECVE records.
+    pub audit_log_path: String,
+    /// Directory to store session metadata.
+    pub session_store_dir: String,
+    /// Maximum age before session data is pruned.
+    pub max_session_age: String,
+    /// Additional suspicious command patterns.
+    pub suspicious_patterns: Vec<String>,
+}
+
+impl Default for SshSessionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            log_paths: vec!["/var/log/auth.log".into()],
+            audit_log_path: "/var/log/audit/audit.log".into(),
+            session_store_dir: "~/.aegis/sessions".into(),
+            max_session_age: "30d".into(),
+            suspicious_patterns: Vec::new(),
+        }
+    }
+}
+
+/// Threat intelligence enrichment configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnrichmentConfig {
+    pub enabled: bool,
+    /// AbuseIPDB API key.
+    pub abuseipdb_key: String,
+    /// Shodan API key.
+    pub shodan_key: String,
+    /// GreyNoise API key.
+    pub greynoise_key: String,
+    /// Cache TTL for enrichment results.
+    pub cache_ttl: String,
+    /// API rate limit per minute.
+    pub rate_limit_per_minute: u32,
+}
+
+impl Default for EnrichmentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            abuseipdb_key: String::new(),
+            shodan_key: String::new(),
+            greynoise_key: String::new(),
+            cache_ttl: "24h".into(),
+            rate_limit_per_minute: 30,
+        }
+    }
+}
+
+/// CIS benchmark auditing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditConfig {
+    pub enabled: bool,
+    /// Audit profile: "server" or "workstation".
+    pub profile: String,
+    /// Report output format: "json", "html", or "text".
+    pub report_format: String,
+    /// Whether to suggest remediation steps.
+    pub remediate: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile: "server".into(),
+            report_format: "text".into(),
+            remediate: false,
+        }
+    }
+}
+
+/// Automated forensic snapshot configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForensicConfig {
+    pub enabled: bool,
+    /// Minimum severity to trigger a snapshot.
+    pub trigger_severity: String,
+    /// Threat types that trigger a snapshot.
+    pub trigger_types: Vec<String>,
+    /// Directory to store forensic snapshots.
+    pub snapshot_dir: String,
+    /// Whether to capture process memory.
+    pub capture_memory: bool,
+    /// Maximum number of snapshots to retain.
+    pub max_snapshots: u32,
+    /// Days to retain snapshots.
+    pub retention_days: u32,
+}
+
+impl Default for ForensicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            trigger_severity: "critical".into(),
+            trigger_types: vec!["reverse_shell".into(), "rootkit_detected".into()],
+            snapshot_dir: "~/.aegis/forensic".into(),
+            capture_memory: false,
+            max_snapshots: 50,
+            retention_days: 90,
+        }
+    }
+}
+
+/// TLS fingerprinting (JA3/JA4) configuration.
+#[cfg(feature = "tls-fingerprint")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TlsFingerprintConfig {
+    pub enabled: bool,
+    /// Network interface to capture on.
+    pub interface: String,
+    /// Path to known-bad fingerprint database.
+    pub known_bad_file: String,
+    /// Log all fingerprints, not just matches.
+    pub log_all_fingerprints: bool,
+}
+
+#[cfg(feature = "tls-fingerprint")]
+impl Default for TlsFingerprintConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interface: "eth0".into(),
+            known_bad_file: "~/.aegis/ja3_bad.json".into(),
+            log_all_fingerprints: false,
+        }
+    }
+}
+
+/// YARA rule scanning configuration.
+#[cfg(feature = "yara")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct YaraConfig {
+    pub enabled: bool,
+    /// Directory containing .yar rule files.
+    pub rules_dir: String,
+    /// Scan newly executed processes.
+    pub scan_new_processes: bool,
+    /// Scan files dropped in suspicious directories.
+    pub scan_dropped_files: bool,
+    /// Cache SHA-256 of known-good binaries.
+    pub cache_known_good: bool,
+    /// Maximum file size to scan (MB).
+    pub max_file_size_mb: u32,
+}
+
+#[cfg(feature = "yara")]
+impl Default for YaraConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rules_dir: "~/.aegis/yara_rules".into(),
+            scan_new_processes: true,
+            scan_dropped_files: true,
+            cache_known_good: true,
+            max_file_size_mb: 100,
+        }
+    }
+}
+
+/// Central aggregation server configuration.
+#[cfg(feature = "server")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerConfig {
+    pub enabled: bool,
+    /// gRPC bind address.
+    pub bind: String,
+    /// TLS certificate path.
+    pub tls_cert: String,
+    /// TLS key path.
+    pub tls_key: String,
+    /// Maximum connected hosts.
+    pub max_hosts: u32,
+    /// Days to retain events.
+    pub retention_days: u32,
+}
+
+#[cfg(feature = "server")]
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "0.0.0.0:50051".into(),
+            tls_cert: String::new(),
+            tls_key: String::new(),
+            max_hosts: 100,
+            retention_days: 30,
         }
     }
 }

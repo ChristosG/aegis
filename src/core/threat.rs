@@ -76,6 +76,17 @@ pub enum ThreatType {
     CertExpiringSoon,
     KernelModuleLoaded,
     NewOutboundDestination,
+    DgaDomain,
+    DnsTunneling,
+    ContainerEscape,
+    TlsBadFingerprint,
+    YaraMatch,
+    RootkitDetected,
+    HiddenProcess,
+    LdPreloadHook,
+    SuspiciousCommand,
+    CisBenchmarkFail,
+    ForensicSnapshot,
 }
 
 impl fmt::Display for ThreatType {
@@ -109,6 +120,17 @@ impl fmt::Display for ThreatType {
             ThreatType::CertExpiringSoon => write!(f, "Certificate Expiring Soon"),
             ThreatType::KernelModuleLoaded => write!(f, "Kernel Module Loaded"),
             ThreatType::NewOutboundDestination => write!(f, "New Outbound Destination"),
+            ThreatType::DgaDomain => write!(f, "DGA Domain"),
+            ThreatType::DnsTunneling => write!(f, "DNS Tunneling"),
+            ThreatType::ContainerEscape => write!(f, "Container Escape"),
+            ThreatType::TlsBadFingerprint => write!(f, "TLS Bad Fingerprint"),
+            ThreatType::YaraMatch => write!(f, "YARA Match"),
+            ThreatType::RootkitDetected => write!(f, "Rootkit Detected"),
+            ThreatType::HiddenProcess => write!(f, "Hidden Process"),
+            ThreatType::LdPreloadHook => write!(f, "LD_PRELOAD Hook"),
+            ThreatType::SuspiciousCommand => write!(f, "Suspicious Command"),
+            ThreatType::CisBenchmarkFail => write!(f, "CIS Benchmark Fail"),
+            ThreatType::ForensicSnapshot => write!(f, "Forensic Snapshot"),
         }
     }
 }
@@ -145,6 +167,17 @@ impl ThreatType {
             ThreatType::CertExpiringSoon => ThreatSeverity::Medium,
             ThreatType::KernelModuleLoaded => ThreatSeverity::High,
             ThreatType::NewOutboundDestination => ThreatSeverity::Low,
+            ThreatType::DgaDomain => ThreatSeverity::High,
+            ThreatType::DnsTunneling => ThreatSeverity::High,
+            ThreatType::ContainerEscape => ThreatSeverity::Critical,
+            ThreatType::TlsBadFingerprint => ThreatSeverity::High,
+            ThreatType::YaraMatch => ThreatSeverity::Critical,
+            ThreatType::RootkitDetected => ThreatSeverity::Critical,
+            ThreatType::HiddenProcess => ThreatSeverity::Critical,
+            ThreatType::LdPreloadHook => ThreatSeverity::Critical,
+            ThreatType::SuspiciousCommand => ThreatSeverity::High,
+            ThreatType::CisBenchmarkFail => ThreatSeverity::Medium,
+            ThreatType::ForensicSnapshot => ThreatSeverity::Info,
         }
     }
 
@@ -179,6 +212,17 @@ impl ThreatType {
             "cert_expiring_soon" => Some(ThreatType::CertExpiringSoon),
             "kernel_module_loaded" => Some(ThreatType::KernelModuleLoaded),
             "new_outbound_destination" => Some(ThreatType::NewOutboundDestination),
+            "dga_domain" => Some(ThreatType::DgaDomain),
+            "dns_tunneling" => Some(ThreatType::DnsTunneling),
+            "container_escape" => Some(ThreatType::ContainerEscape),
+            "tls_bad_fingerprint" => Some(ThreatType::TlsBadFingerprint),
+            "yara_match" => Some(ThreatType::YaraMatch),
+            "rootkit_detected" => Some(ThreatType::RootkitDetected),
+            "hidden_process" => Some(ThreatType::HiddenProcess),
+            "ld_preload_hook" => Some(ThreatType::LdPreloadHook),
+            "suspicious_command" => Some(ThreatType::SuspiciousCommand),
+            "cis_benchmark_fail" => Some(ThreatType::CisBenchmarkFail),
+            "forensic_snapshot" => Some(ThreatType::ForensicSnapshot),
             _ => None,
         }
     }
@@ -207,6 +251,9 @@ pub struct ThreatEvent {
     pub timestamp: DateTime<Utc>,
     /// Whether an automated response action was taken.
     pub auto_responded: bool,
+    /// Container ID if the threat originated from a container.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container_id: Option<String>,
 }
 
 impl ThreatEvent {
@@ -233,6 +280,7 @@ impl ThreatEvent {
             details: HashMap::new(),
             timestamp: now,
             auto_responded: false,
+            container_id: None,
         }
     }
 
@@ -269,6 +317,12 @@ impl ThreatEvent {
     /// Mark this event as having had an automated response.
     pub fn with_auto_responded(mut self, responded: bool) -> Self {
         self.auto_responded = responded;
+        self
+    }
+
+    /// Set the container ID for container-originated threats.
+    pub fn with_container_id(mut self, id: impl Into<String>) -> Self {
+        self.container_id = Some(id.into());
         self
     }
 }

@@ -86,6 +86,18 @@ pub enum Commands {
         #[arg(long)]
         intel: bool,
 
+        /// Scan DNS logs for DGA domains and tunneling.
+        #[arg(long)]
+        dns: bool,
+
+        /// Run rootkit detection checks.
+        #[arg(long)]
+        rootkit: bool,
+
+        /// Analyse SSH session commands for suspicious patterns.
+        #[arg(long)]
+        ssh_session: bool,
+
         /// Enable automatic response actions (block, kill) for detected threats.
         ///
         /// Without this flag threats are reported but no automated mitigation
@@ -190,6 +202,37 @@ pub enum Commands {
     #[command(name = "config-upgrade")]
     ConfigUpgrade,
 
+    /// Run CIS benchmark compliance audit.
+    Audit {
+        /// Audit profile: "server" or "workstation".
+        #[arg(long, default_value = "server")]
+        profile: String,
+
+        /// Output format: "text", "json", or "html".
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Output file path (prints to stdout if not specified).
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Start gRPC aggregation server for fleet monitoring.
+    #[cfg(feature = "server")]
+    Server {
+        /// gRPC bind address.
+        #[arg(long, default_value = "0.0.0.0:50051")]
+        bind: String,
+
+        /// TLS certificate file.
+        #[arg(long)]
+        tls_cert: Option<String>,
+
+        /// TLS key file.
+        #[arg(long)]
+        tls_key: Option<String>,
+    },
+
     /// Full system hardening setup: config, sysctl, firewall, baseline,
     /// fail2ban, and systemd service installation.
     Init {
@@ -232,10 +275,15 @@ impl Commands {
                 auth,
                 web,
                 intel,
+                dns,
+                rootkit,
+                ssh_session,
                 ..
             } => {
                 // If no flag is set, run everything.
-                if !network && !processes && !files && !auth && !web && !intel {
+                if !network && !processes && !files && !auth && !web && !intel
+                    && !dns && !rootkit && !ssh_session
+                {
                     return None;
                 }
 
@@ -257,6 +305,15 @@ impl Commands {
                 }
                 if *intel {
                     modules.push("threat_intel".to_string());
+                }
+                if *dns {
+                    modules.push("dns".to_string());
+                }
+                if *rootkit {
+                    modules.push("rootkit".to_string());
+                }
+                if *ssh_session {
+                    modules.push("ssh_session".to_string());
                 }
                 Some(modules)
             }

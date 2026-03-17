@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
             auth,
             web,
             intel,
+            dns,
+            rootkit,
+            ssh_session,
             auto_respond,
         } => {
             cmd_scan(
@@ -81,6 +84,9 @@ async fn main() -> Result<()> {
                 auth,
                 web,
                 intel,
+                dns,
+                rootkit,
+                ssh_session,
                 auto_respond,
             )
             .await
@@ -97,6 +103,17 @@ async fn main() -> Result<()> {
         Commands::Fi { on, off } => cmd_fi(config, on, off).await,
         Commands::Update { check, force } => cmd_update(config, check, force).await,
         Commands::InitMail => cmd_init_mail(config),
+        Commands::Audit {
+            profile,
+            format,
+            output,
+        } => cmd_audit(config, &profile, &format, output.as_deref()).await,
+        #[cfg(feature = "server")]
+        Commands::Server {
+            bind,
+            tls_cert,
+            tls_key,
+        } => cmd_server(config, &bind, tls_cert.as_deref(), tls_key.as_deref()).await,
         Commands::ConfigUpgrade => cmd_config_upgrade(),
         Commands::Init {
             skip_sysctl,
@@ -166,13 +183,17 @@ async fn cmd_scan(
     auth: bool,
     web: bool,
     intel: bool,
+    dns: bool,
+    rootkit: bool,
+    ssh_session: bool,
     auto_respond: bool,
 ) -> Result<()> {
     let engine = Engine::new(config);
 
     // Build module filter from CLI flags.
     let filter = {
-        let any_set = network || processes || files || auth || web || intel;
+        let any_set = network || processes || files || auth || web || intel
+            || dns || rootkit || ssh_session;
         if any_set {
             let mut modules = Vec::new();
             if network {
@@ -192,6 +213,15 @@ async fn cmd_scan(
             }
             if intel {
                 modules.push("threat_intel".to_string());
+            }
+            if dns {
+                modules.push("dns".to_string());
+            }
+            if rootkit {
+                modules.push("rootkit".to_string());
+            }
+            if ssh_session {
+                modules.push("ssh_session".to_string());
             }
             Some(modules)
         } else {
@@ -752,6 +782,95 @@ fn cmd_init(
         skip_dashboard,
     };
     aegis::init::run_init(&config, &flags)
+}
+
+/// Run CIS benchmark compliance audit.
+async fn cmd_audit(
+    config: aegis::config::schema::AegisConfig,
+    profile: &str,
+    format: &str,
+    output: Option<&str>,
+) -> Result<()> {
+    use colored::Colorize;
+
+    output::print_banner();
+    println!("\n  Running CIS benchmark audit (profile: {})...\n", profile);
+
+    let audit_module = aegis::modules::audit::AuditModule::new(config.audit.clone());
+    let results = audit_module.run_audit(profile).await?;
+
+    let total = results.len();
+    let passed = results.iter().filter(|r| r.pass).count();
+    let failed = total - passed;
+    let score = if total > 0 {
+        (passed as f64 / total as f64) * 100.0
+    } else {
+        100.0
+    };
+
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(&results)?;
+            if let Some(path) = output {
+                std::fs::write(path, &json)?;
+                println!("  JSON audit report written to {}", path);
+            } else {
+                println!("{}", json);
+            }
+        }
+        _ => {
+            println!(
+                "  Compliance Score: {:.0}% ({}/{} checks passed)\n",
+                score, passed, total
+            );
+            for result in &results {
+                let status = if result.pass {
+                    "PASS".green().to_string()
+                } else {
+                    "FAIL".red().to_string()
+                };
+                println!("  [{}] {} - {}", status, result.id, result.title);
+                if !result.pass {
+                    println!("         {}", result.details);
+                    if !result.remediation.is_empty() {
+                        println!("         Fix: {}", result.remediation);
+                    }
+                }
+            }
+
+            if failed > 0 {
+                println!(
+                    "\n  {} {} check(s) failed. Review remediations above.\n",
+                    "WARN".yellow().bold(),
+                    failed
+                );
+            } else {
+                println!(
+                    "\n  {} All checks passed.\n",
+                    "OK".green().bold()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Start the gRPC fleet aggregation server.
+#[cfg(feature = "server")]
+async fn cmd_server(
+    _config: aegis::config::schema::AegisConfig,
+    bind: &str,
+    _tls_cert: Option<&str>,
+    _tls_key: Option<&str>,
+) -> Result<()> {
+    use colored::Colorize;
+    println!(
+        "\n  {} gRPC server mode is not yet implemented.",
+        "TODO".yellow().bold()
+    );
+    println!("  Would bind to: {}", bind);
+    Ok(())
 }
 
 /// Merge new default config keys into the user's existing aegis.toml.

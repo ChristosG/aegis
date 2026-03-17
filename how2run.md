@@ -21,6 +21,9 @@
   sudo ./target/release/aegis scan --anomaly
   sudo ./target/release/aegis scan --honeypot
   sudo ./target/release/aegis scan --cert
+  sudo ./target/release/aegis scan --dns
+  sudo ./target/release/aegis scan --rootkit
+  sudo ./target/release/aegis scan --ssh-session
 
   # Scan with auto-response (blocks IPs, kills miners)
   sudo ./target/release/aegis scan --auto-respond
@@ -60,6 +63,15 @@
   aegis --help
   aegis --version
 
+  # CIS benchmark compliance audit
+  sudo ./target/release/aegis audit
+  sudo ./target/release/aegis audit --profile workstation
+  sudo ./target/release/aegis audit --format json --output audit.json
+
+  # Enterprise features (build with feature flags)
+  cargo build --release --features "web-dashboard,ebpf"
+  cargo build --release --features "web-dashboard,tls-fingerprint,yara,server"
+
   sudo is needed for reading auth logs, /proc inspection, and iptables. Without it, modules degrade gracefully but some detections will be limited.
 
   Key data files in ~/.aegis/:
@@ -75,6 +87,11 @@
     anomaly_sudoers_baseline.json — sudoers baseline for change detection
     anomaly_users_baseline.json   — known user accounts baseline
     kernel_modules_baseline.json  — loaded kernel modules baseline
+    enrichment_cache.json  — cached threat intel enrichment results
+    sessions/              — SSH session metadata
+    forensic/              — automated forensic snapshots
+    yara_rules/            — YARA rule files (.yar)
+    yara_cache.json        — SHA-256 known-good binary cache
 
   System files created by `aegis init`:
     /etc/aegis/aegis.toml                       — main config
@@ -115,11 +132,21 @@
     GET  /api/logs       — structured logs
     GET  /ws/threats     — WebSocket live threat stream
     GET  /health         — health check
+    GET  /api/audit      — run CIS audit and return results
+    GET  /api/enrich/:ip — enrich IP with threat intelligence
 
   New modules in aegis.toml:
     [anomaly]    — login time, cron/sudoers monitoring, new users, kernel modules
     [honeypot]   — decoy port listeners with auto-block
     [cert]       — TLS certificate expiry monitoring
+    [dns]          — DGA domain detection, DNS tunneling
+    [rootkit]      — hidden process/file detection, LD_PRELOAD scanning
+    [ssh_session]  — audit log analysis for suspicious commands
+    [container]    — Docker/containerd/podman awareness
+    [ebpf]         — eBPF real-time monitoring (auto-fallback)
+    [enrichment]   — AbuseIPDB/Shodan/GreyNoise integration
+    [audit]        — CIS benchmark compliance checks
+    [forensic]     — automated forensic snapshots on critical threats
 
   To install system-wide manually (alternative to `aegis init`):
 

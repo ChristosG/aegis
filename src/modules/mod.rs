@@ -1,12 +1,24 @@
 pub mod anomaly;
+pub mod audit;
 pub mod auth;
 pub mod cert;
+pub mod dns;
+pub mod ebpf;
+pub mod enrichment;
 pub mod file_integrity;
+pub mod forensic;
 pub mod honeypot;
 pub mod network;
 pub mod process;
+pub mod rootkit;
+pub mod ssh_session;
 pub mod threat_intel;
 pub mod web;
+
+#[cfg(feature = "tls-fingerprint")]
+pub mod tls_fingerprint;
+#[cfg(feature = "yara")]
+pub mod yara_scan;
 
 use std::sync::Arc;
 
@@ -106,6 +118,34 @@ pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
             }
             "cert" if config.cert.enabled => {
                 modules.push(Arc::new(cert::CertModule::new(config.cert.clone())));
+            }
+            "dns" if config.dns.enabled => {
+                let data_dir = crate::config::defaults::resolve_path(&config.general.data_dir);
+                modules.push(Arc::new(dns::DnsModule::new(config.dns.clone(), data_dir)));
+            }
+            "rootkit" if config.rootkit.enabled => {
+                modules.push(Arc::new(rootkit::RootkitModule::new(
+                    config.rootkit.clone(),
+                )));
+            }
+            "ssh_session" if config.ssh_session.enabled => {
+                let data_dir = crate::config::defaults::resolve_path(&config.general.data_dir);
+                modules.push(Arc::new(ssh_session::SshSessionModule::new(
+                    config.ssh_session.clone(),
+                    data_dir,
+                )));
+            }
+            #[cfg(feature = "tls-fingerprint")]
+            "tls_fingerprint" if config.tls_fingerprint.enabled => {
+                modules.push(Arc::new(tls_fingerprint::TlsFingerprintModule::new(
+                    config.tls_fingerprint.clone(),
+                )));
+            }
+            #[cfg(feature = "yara")]
+            "yara_scan" if config.yara.enabled => {
+                modules.push(Arc::new(yara_scan::YaraScanModule::new(
+                    config.yara.clone(),
+                )));
             }
             name => {
                 tracing::warn!(module = name, "Unknown or disabled module, skipping");

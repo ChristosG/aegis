@@ -817,5 +817,16 @@ fn threat_type_to_config_key(tt: &ThreatType) -> String {
         ThreatType::CertExpiringSoon => "cert_expiring_soon".into(),
         ThreatType::KernelModuleLoaded => "kernel_module_loaded".into(),
         ThreatType::NewOutboundDestination => "new_outbound_destination".into(),
+        ThreatType::DgaDomain => "dga_domain".into(),
+        ThreatType::DnsTunneling => "dns_tunneling".into(),
+        ThreatType::ContainerEscape => "container_escape".into(),
+        ThreatType::TlsBadFingerprint => "tls_bad_fingerprint".into(),
+        ThreatType::YaraMatch => "yara_match".into(),
+        ThreatType::RootkitDetected => "rootkit_detected".into(),
+        ThreatType::HiddenProcess => "hidden_process".into(),
+        ThreatType::LdPreloadHook => "ld_preload_hook".into(),
+        ThreatType::SuspiciousCommand => "suspicious_command".into(),
+        ThreatType::CisBenchmarkFail => "cis_benchmark_fail".into(),
+        ThreatType::ForensicSnapshot => "forensic_snapshot".into(),
     }
 }

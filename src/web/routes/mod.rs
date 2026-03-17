@@ -1,7 +1,9 @@
+pub mod audit;
 pub mod baseline;
 pub mod blocks;
 pub mod config;
 pub mod dashboard;
+pub mod enrichment;
 pub mod firewall;
 pub mod logs;
 pub mod report;

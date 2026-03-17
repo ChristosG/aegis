@@ -114,6 +114,10 @@ $ sudo aegis scan
   - [Anomaly Detection Module](#anomaly-detection-module)
   - [Honeypot Module](#honeypot-module)
   - [Certificate Monitoring Module](#certificate-monitoring-module)
+  - [DNS Module](#dns-module)
+  - [Rootkit Detection Module](#rootkit-detection-module)
+  - [SSH Session Module](#ssh-session-module)
+  - [CIS Benchmark Auditing](#cis-benchmark-auditing)
 - [Automated Response](#automated-response)
   - [Response Actions](#response-actions)
   - [Firewall Backends](#firewall-backends)
@@ -134,6 +138,11 @@ $ sudo aegis scan
 - [Deployment](#deployment)
   - [systemd Service](#systemd-service)
   - [Capabilities Mode](#capabilities-mode)
+- [Enterprise Features](#enterprise-features)
+  - [eBPF Monitoring](#ebpf-monitoring)
+  - [TLS Fingerprinting](#tls-fingerprinting)
+  - [YARA Scanning](#yara-scanning)
+  - [Fleet Server](#fleet-server)
 - [Building from Source](#building-from-source)
 - [Contributing](#contributing)
 - [License](#license)
@@ -161,10 +170,21 @@ $ sudo aegis scan
 | **Alerting** | Terminal, JSON log, SMTP email, Slack, Telegram, webhooks |
 | **Connection Rate** | Per-IP connection rate monitoring with configurable threshold |
 | **Outbound Anomaly** | Detects new outbound destinations not in established baseline |
+| **DNS Monitoring** | DGA domain detection via Shannon entropy, DNS tunneling via query rate analysis |
+| **Rootkit Detection** | Hidden process detection, LD_PRELOAD scanning, kernel symbol inspection, hidden file checks |
+| **SSH Session Analysis** | Audit log parsing for suspicious commands (reverse shells, data exfil, anti-forensics) |
+| **Container Awareness** | Docker/containerd/podman/LXC detection, container escape detection, per-threat container context |
+| **CIS Benchmarks** | Automated compliance auditing: SSH hardening, firewall, file permissions, kernel params |
+| **Forensic Snapshots** | Automated evidence capture on critical threats: process state, network, file descriptors |
+| **Threat Enrichment** | AbuseIPDB, Shodan, GreyNoise API integration with caching |
+| **eBPF Monitoring** | Real-time process/network/file tracing with automatic polling fallback (opt-in) |
+| **TLS Fingerprinting** | JA3/JA4 hash computation, known-bad C2 fingerprint matching (opt-in) |
+| **YARA Scanning** | Rule-based malware detection with known-good binary caching (opt-in) |
+| **Fleet Server** | gRPC-based central aggregation for multi-host monitoring (opt-in) |
 
 **Design principles:**
 - Single static binary &mdash; no Python, no JVM, no containers
-- Zero `unsafe` code &mdash; eliminates memory corruption attack surface
+- Minimal `unsafe` code &mdash; one targeted `libc::kill(pid, 0)` call for rootkit hidden process detection
 - No listening sockets in core &mdash; web dashboard is opt-in via feature flag
 - No shell invocation &mdash; all external commands use safe `Command::new()` with explicit args
 - Minimal dependencies &mdash; every crate justified and auditable
@@ -1015,6 +1035,63 @@ domains = ["example.com", "api.example.com:8443"]
 warn_days = 14
 ```
 
+### DNS Module
+
+Monitors DNS query logs for DGA (Domain Generation Algorithm) domains and DNS tunneling.
+
+| Check | How |
+|-------|-----|
+| DGA detection | Shannon entropy of domain labels > threshold (default 3.5) |
+| DNS tunneling | High query volume to single domain + TXT record ratio |
+
+**Config:** `[dns]` — `dga_entropy_threshold`, `tunnel_query_rate_threshold`, `whitelist_domains`
+
+### Rootkit Detection Module
+
+Comprehensive rootkit checks, disabled by default (enable with `rootkit.enabled = true`).
+
+| Check | How |
+|-------|-----|
+| Hidden processes | Compare `readdir(/proc)` vs `kill(pid, 0)` — discrepancy = hidden PID |
+| LD_PRELOAD hooks | Scan `/etc/ld.so.preload` and all process environments |
+| Kernel symbols | Inspect `/proc/kallsyms` for suspicious hooked entries |
+| Hidden files | Scan `/tmp`, `/var/tmp`, `/dev/shm` for rootkit hiding patterns |
+| Shared libraries | Check `ld.so.conf.d` for paths pointing to temp directories |
+
+**Config:** `[rootkit]` — individual checks can be toggled
+
+### SSH Session Module
+
+Analyses audit logs and auth logs for post-exploitation activity (disabled by default).
+
+**Builtin suspicious patterns (30+):**
+- Remote code execution: `curl|bash`, `wget|sh`
+- Payload decoding: `base64 -d`
+- Reverse shells: `bash -i >& /dev/tcp/`, `python -c 'import socket'`
+- Privilege escalation: `chmod +s`, `chmod 4755`
+- Anti-forensics: `history -c`, `unset HISTFILE`
+- Container escape: `nsenter --target 1`, `chroot /host`
+
+**Config:** `[ssh_session]` — `log_paths`, `audit_log_path`, `suspicious_patterns`
+
+### CIS Benchmark Auditing
+
+Run compliance audits with `aegis audit`:
+
+```
+$ sudo aegis audit
+  Compliance Score: 85% (17/20 checks passed)
+
+  [PASS] 5.2.1 - sshd_config permissions
+  [FAIL] 5.2.4 - SSH root login disabled
+         Fix: Set 'PermitRootLogin no' in /etc/ssh/sshd_config
+  ...
+```
+
+**Checks:** SSH hardening (5 checks), firewall (2), file permissions (5), services (4), kernel params (7)
+
+**Config:** `[audit]` — `profile` (server/workstation), `report_format` (text/json/html)
+
 ---
 
 ## Automated Response
@@ -1800,6 +1877,62 @@ aegis scan    # Works without sudo
 
 ---
 
+## Enterprise Features
+
+Aegis supports opt-in enterprise features via Cargo feature flags. These add heavier dependencies and are compiled separately.
+
+### Build Variants
+
+| Package | Features | Binary Size |
+|---------|----------|-------------|
+| `aegis` | Core modules only | ~7.6 MB |
+| `aegis-full` | + Web dashboard | ~9 MB |
+| `aegis-enterprise` | + eBPF, TLS fingerprint, YARA, gRPC server | ~13 MB |
+
+### eBPF Monitoring
+
+Real-time kernel-level tracing (requires kernel 5.8+ with BTF). Falls back to 60s polling automatically.
+
+```bash
+cargo build --release --features ebpf
+```
+
+**Config:** `[ebpf]` — `probe_execve`, `probe_connect`, `probe_open`, `fallback_poll_secs`
+
+### TLS Fingerprinting
+
+JA3/JA4 TLS ClientHello fingerprinting to detect known malware C2 tools.
+
+```bash
+cargo build --release --features tls-fingerprint
+```
+
+**Config:** `[tls_fingerprint]` — `interface`, `known_bad_file`
+
+### YARA Scanning
+
+Rule-based malware detection with SHA-256 known-good caching.
+
+```bash
+cargo build --release --features yara
+```
+
+**Config:** `[yara]` — `rules_dir`, `scan_new_processes`, `max_file_size_mb`
+
+### Fleet Server
+
+gRPC-based central aggregation for multi-host monitoring.
+
+```bash
+cargo build --release --features server
+aegis server --bind 0.0.0.0:50051
+aegis watch --report-to server.example.com:50051
+```
+
+**Config:** `[server]` — `bind`, `tls_cert`, `tls_key`, `max_hosts`
+
+---
+
 ## Building from Source
 
 ### Prerequisites
@@ -1813,6 +1946,9 @@ aegis scan    # Works without sudo
 git clone https://github.com/ChristosG/aegis.git
 cd aegis
 cargo build --release
+
+# Build with enterprise features
+cargo build --release --features "web-dashboard,ebpf,tls-fingerprint,yara,server"
 ```
 
 The optimized binary is at `target/release/aegis` (~7.6 MB, stripped with LTO).

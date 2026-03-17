@@ -62,6 +62,11 @@ fn validate_general(config: &AegisConfig, result: &mut ValidationResult) {
         "anomaly",
         "honeypot",
         "cert",
+        "dns",
+        "rootkit",
+        "ssh_session",
+        "tls_fingerprint",
+        "yara_scan",
     ];
     for module in &config.general.modules {
         if !valid_modules.contains(&module.as_str()) {

@@ -145,6 +145,8 @@ pub async fn start_server(
             post(routes::baseline::api_fi_toggle),
         )
         .route("/api/logs", get(routes::logs::api_logs))
+        .route("/api/audit", get(routes::audit::api_audit))
+        .route("/api/enrich/{ip}", get(routes::enrichment::api_enrich))
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
         .layer(RateLimitLayer::new(is_localhost))
         .layer(cors)
