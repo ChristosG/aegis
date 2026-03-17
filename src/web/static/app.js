@@ -1,8 +1,29 @@
 // === Modal System ===
-function showModal(title, bodyHtml, footerHtml) {
+// All modal content is built via safe DOM methods — no innerHTML.
+// Dynamic user/API data is always set via textContent to prevent XSS.
+
+// Build DOM nodes from a declarative spec: [{tag, id, cls, text, onclick, children}]
+function buildNodes(specs, parent) {
+    for (var i = 0; i < specs.length; i++) {
+        var s = specs[i];
+        var el = document.createElement(s.tag || 'div');
+        if (s.id) el.id = s.id;
+        if (s.cls) el.className = s.cls;
+        if (s.text) el.textContent = s.text;
+        if (s.onclick) el.onclick = s.onclick;
+        if (s.children) buildNodes(s.children, el);
+        parent.appendChild(el);
+    }
+}
+
+function showModal(title, bodySpecs, footerSpecs) {
     document.getElementById('modal-title').textContent = title;
-    document.getElementById('modal-body').innerHTML = bodyHtml;
-    document.getElementById('modal-footer').innerHTML = footerHtml || '';
+    var body = document.getElementById('modal-body');
+    var footer = document.getElementById('modal-footer');
+    body.textContent = '';
+    footer.textContent = '';
+    if (bodySpecs) buildNodes(bodySpecs, body);
+    if (footerSpecs) buildNodes(footerSpecs, footer);
     document.getElementById('modal-overlay').style.display = 'flex';
 }
 
@@ -14,24 +35,27 @@ function closeModal(e) {
     if (e.target === document.getElementById('modal-overlay')) hideModal();
 }
 
+// Helper: loading/status modal with a single text paragraph
+function showStatusModal(title, message) {
+    showModal(title, [{tag: 'p', text: message}], []);
+}
+
 function showConfirm(title, message, onConfirm) {
-    showModal(title, '<p id="modal-confirm-msg"></p>',
-        '<button class="btn-modal-cancel" onclick="hideModal()">Cancel</button>' +
-        '<button class="btn-modal-confirm" id="modal-confirm-btn">Confirm</button>'
+    showModal(title,
+        [{tag: 'p', id: 'modal-confirm-msg', text: message}],
+        [
+            {tag: 'button', cls: 'btn-modal-cancel', text: 'Cancel', onclick: function() { hideModal(); }},
+            {tag: 'button', cls: 'btn-modal-confirm', id: 'modal-confirm-btn', text: 'Confirm', onclick: function() { hideModal(); onConfirm(); }}
+        ]
     );
-    document.getElementById('modal-confirm-msg').textContent = message;
-    document.getElementById('modal-confirm-btn').onclick = function() {
-        hideModal();
-        onConfirm();
-    };
 }
 
 function showResult(title, message, isError) {
     var cls = isError ? 'modal-error' : 'modal-success';
-    showModal(title, '<p class="' + cls + '" id="modal-result-msg"></p>',
-        '<button class="btn-modal-cancel" onclick="hideModal()">Close</button>'
+    showModal(title,
+        [{tag: 'p', cls: cls, id: 'modal-result-msg', text: message}],
+        [{tag: 'button', cls: 'btn-modal-cancel', text: 'Close', onclick: function() { hideModal(); }}]
     );
-    document.getElementById('modal-result-msg').textContent = message;
 }
 
 // === Keyboard: Escape closes modal ===
@@ -979,7 +1003,7 @@ function triggerScan() {
 }
 
 function executeScan(modules) {
-    showModal('Running Scan', '<p>Scanning selected modules...</p>', '');
+    showStatusModal('Running Scan', 'Scanning selected modules...');
     var opts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
     if (modules && modules.length > 0) {
         opts.body = JSON.stringify({ modules: modules });
@@ -1062,7 +1086,7 @@ function executeScan(modules) {
 
 function triggerAutoRespond() {
     showConfirm('Auto-Respond', 'Run automated response on all unresponded threats?', function() {
-        showModal('Auto-Responding', '<p>Processing threats...</p>', '');
+        showStatusModal('Auto-Responding', 'Processing threats...');
         fetch('/api/respond?token=' + API_TOKEN, { method: 'POST' })
             .then(function(r) { return r.json(); })
             .then(function(data) {
@@ -1134,7 +1158,7 @@ function exportReport() {
 }
 
 function viewReport() {
-    showModal('Loading Report', '<p>Generating report...</p>', '');
+    showStatusModal('Loading Report', 'Generating report...');
     fetch('/api/report?token=' + API_TOKEN)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -1209,7 +1233,7 @@ function resetBaseline() {
     showConfirm('Reset Baseline',
         'This will reset the file integrity baseline. All current files will be accepted as normal. Continue?',
         function() {
-            showModal('Resetting Baseline', '<p>Deleting baseline and pending changes...</p>', '');
+            showStatusModal('Resetting Baseline', 'Deleting baseline and pending changes...');
             fetch('/api/baseline/reset?token=' + API_TOKEN, { method: 'POST' })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -1230,7 +1254,7 @@ function createBaseline() {
     showConfirm('Create Baseline',
         'This will hash all watched files and create a new baseline. Continue?',
         function() {
-            showModal('Creating Baseline', '<p>Hashing files...</p>', '');
+            showStatusModal('Creating Baseline', 'Hashing files...');
             fetch('/api/baseline/create?token=' + API_TOKEN, { method: 'POST' })
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
@@ -1279,7 +1303,7 @@ function toggleFI() {
 
 // === Config Validation ===
 function validateConfig() {
-    showModal('Validating Config', '<p>Checking configuration...</p>', '');
+    showStatusModal('Validating Config', 'Checking configuration...');
     fetch('/api/check?token=' + API_TOKEN, { method: 'POST' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -2066,7 +2090,7 @@ function toggleModule(module, enabled) {
 }
 
 function discoverPorts() {
-    showModal('Discovering Ports', '<p>Scanning listening ports...</p>', '');
+    showStatusModal('Discovering Ports', 'Scanning listening ports...');
     fetch('/api/discover/ports?token=' + API_TOKEN)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -2147,7 +2171,7 @@ function applyDiscoveredPorts(ports) {
 }
 
 function discoverDomains() {
-    showModal('Discovering Domains', '<p>Scanning nginx configs...</p>', '');
+    showStatusModal('Discovering Domains', 'Scanning nginx configs...');
     fetch('/api/discover/domains?token=' + API_TOKEN)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -2420,7 +2444,7 @@ function restartAegis() {
     showConfirm('Restart Aegis',
         'This will restart the aegis daemon to apply configuration changes. The page will briefly disconnect.',
         function() {
-            showModal('Restarting', '', '');
+            showStatusModal('Restarting', 'Restarting aegis service...');
             var modalBody = document.getElementById('modal-body');
             var p = document.createElement('p');
             p.textContent = 'Sending restart signal...';

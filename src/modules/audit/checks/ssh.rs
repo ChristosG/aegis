@@ -22,14 +22,14 @@ pub fn check_ssh_hardening() -> Vec<CisCheckResult> {
     });
 
     // 5.2.4 - Ensure SSH root login is disabled
-    let root_login_disabled = sshd_config
-        .lines()
-        .any(|l| {
-            let l = l.trim();
-            !l.starts_with('#') && l.to_lowercase().contains("permitrootlogin")
-                && (l.contains("no") || l.contains("prohibit-password")
-                    || l.contains("forced-commands-only"))
-        });
+    let root_login_disabled = sshd_config.lines().any(|l| {
+        let l = l.trim();
+        !l.starts_with('#')
+            && l.to_lowercase().contains("permitrootlogin")
+            && (l.contains("no")
+                || l.contains("prohibit-password")
+                || l.contains("forced-commands-only"))
+    });
     results.push(CisCheckResult {
         id: "5.2.4".into(),
         title: "SSH root login disabled".into(),
@@ -70,7 +70,8 @@ pub fn check_ssh_hardening() -> Vec<CisCheckResult> {
     // 5.2.8 - Ensure SSH PermitEmptyPasswords is disabled
     let no_empty_pass = !sshd_config.lines().any(|l| {
         let l = l.trim();
-        !l.starts_with('#') && l.to_lowercase().contains("permitemptypasswords")
+        !l.starts_with('#')
+            && l.to_lowercase().contains("permitemptypasswords")
             && l.to_lowercase().contains("yes")
     });
     results.push(CisCheckResult {

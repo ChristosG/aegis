@@ -44,9 +44,10 @@ impl ForensicService {
         let threat_key = format!("{:?}", threat.threat_type).to_lowercase();
         // Convert from CamelCase to snake_case for matching
         let snake_key = camel_to_snake(&format!("{:?}", threat.threat_type));
-        self.config.trigger_types.iter().any(|t| {
-            t == &threat_key || t == &snake_key
-        })
+        self.config
+            .trigger_types
+            .iter()
+            .any(|t| t == &threat_key || t == &snake_key)
     }
 
     /// Capture a forensic snapshot for the given threat event.
@@ -82,16 +83,14 @@ impl ForensicService {
         // Enforce snapshot limit
         self.enforce_retention()?;
 
-        Ok(
-            ThreatEvent::new(
-                ThreatType::ForensicSnapshot,
-                "forensic",
-                format!("Forensic snapshot captured: {}", dir_name),
-            )
-            .with_detail("snapshot_path", snapshot_path.to_string_lossy().to_string())
-            .with_detail("trigger_threat_id", &threat.id)
-            .with_detail("trigger_type", threat_key),
+        Ok(ThreatEvent::new(
+            ThreatType::ForensicSnapshot,
+            "forensic",
+            format!("Forensic snapshot captured: {}", dir_name),
         )
+        .with_detail("snapshot_path", snapshot_path.to_string_lossy().to_string())
+        .with_detail("trigger_threat_id", &threat.id)
+        .with_detail("trigger_type", threat_key))
     }
 
     fn enforce_retention(&self) -> Result<()> {

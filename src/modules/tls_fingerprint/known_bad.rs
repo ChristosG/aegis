@@ -27,15 +27,10 @@ struct KnownBadEntry {
     description: String,
 }
 
-/// Default known-bad fingerprints (common malware/C2 tools).
+/// Default known-bad fingerprints.
+/// Empty by default — Aegis uses SHA-256 (not MD5) for JA3 hashes,
+/// so standard MD5-based databases are incompatible. Populate
+/// ~/.aegis/ja3_bad.json with SHA-256 fingerprints for your environment.
 fn default_known_bad() -> HashSet<String> {
-    let mut set = HashSet::new();
-    // These are well-known JA3 hashes for common malware/C2 frameworks
-    // Cobalt Strike default
-    set.insert("72a589da586844d7f0818ce684948eea".to_string());
-    // Metasploit Meterpreter
-    set.insert("5d65ea3fb1d4aa7d826733d2f2cbf7df".to_string());
-    // Trickbot
-    set.insert("6734f37431670b3ab4292b8f60f29984".to_string());
-    set
+    HashSet::new()
 }

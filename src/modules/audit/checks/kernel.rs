@@ -4,60 +4,40 @@ use crate::modules::audit::CisCheckResult;
 
 /// Check kernel security parameters according to CIS benchmarks.
 pub fn check_kernel_params() -> Vec<CisCheckResult> {
-    let mut results = Vec::new();
-
-    // 1.5.1 - Ensure ASLR is enabled
-    results.push(check_sysctl(
-        "1.5.1",
-        "ASLR enabled",
-        "kernel.randomize_va_space",
-        "2",
-    ));
-
-    // 3.1.1 - Ensure IP forwarding is disabled
-    results.push(check_sysctl(
-        "3.1.1",
-        "IP forwarding disabled",
-        "net.ipv4.ip_forward",
-        "0",
-    ));
-
-    // 3.2.1 - Ensure source routed packets are not accepted
-    results.push(check_sysctl(
-        "3.2.1",
-        "Source routing disabled",
-        "net.ipv4.conf.all.accept_source_route",
-        "0",
-    ));
-
-    // 3.2.2 - Ensure ICMP redirects are not accepted
-    results.push(check_sysctl(
-        "3.2.2",
-        "ICMP redirects disabled",
-        "net.ipv4.conf.all.accept_redirects",
-        "0",
-    ));
-
-    // 3.2.4 - Ensure suspicious packets are logged
-    results.push(check_sysctl(
-        "3.2.4",
-        "Log suspicious packets",
-        "net.ipv4.conf.all.log_martians",
-        "1",
-    ));
-
-    // 3.3.1 - Ensure TCP SYN cookies is enabled
-    results.push(check_sysctl(
-        "3.3.1",
-        "TCP SYN cookies enabled",
-        "net.ipv4.tcp_syncookies",
-        "1",
-    ));
-
-    // 1.5.3 - Ensure core dumps are restricted
-    results.push(check_core_dumps_restricted());
-
-    results
+    vec![
+        check_sysctl("1.5.1", "ASLR enabled", "kernel.randomize_va_space", "2"),
+        check_sysctl(
+            "3.1.1",
+            "IP forwarding disabled",
+            "net.ipv4.ip_forward",
+            "0",
+        ),
+        check_sysctl(
+            "3.2.1",
+            "Source routing disabled",
+            "net.ipv4.conf.all.accept_source_route",
+            "0",
+        ),
+        check_sysctl(
+            "3.2.2",
+            "ICMP redirects disabled",
+            "net.ipv4.conf.all.accept_redirects",
+            "0",
+        ),
+        check_sysctl(
+            "3.2.4",
+            "Log suspicious packets",
+            "net.ipv4.conf.all.log_martians",
+            "1",
+        ),
+        check_sysctl(
+            "3.3.1",
+            "TCP SYN cookies enabled",
+            "net.ipv4.tcp_syncookies",
+            "1",
+        ),
+        check_core_dumps_restricted(),
+    ]
 }
 
 fn check_sysctl(id: &str, title: &str, param: &str, expected: &str) -> CisCheckResult {

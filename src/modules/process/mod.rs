@@ -46,13 +46,43 @@ const DEVTCP_LOCALHOST_TARGETS: &[&str] = &[
 /// Known legitimate tools that use python/shell with network sockets.
 /// Whitelisted from the socket-FD reverse shell heuristic.
 const KNOWN_LEGITIMATE_TOOLS: &[&str] = &[
-    "certbot", "ansible", "salt-minion", "salt-call",
-    "pip", "pip3", "apt", "apt-get", "yum", "dnf", "pacman",
-    "snap", "flatpak", "git", "curl", "wget", "ssh", "scp",
-    "rsync", "fail2ban", "unattended-upgrade", "cloud-init",
-    "aws", "gcloud", "az", "docker", "podman", "kubectl",
-    "helm", "terraform", "letsencrypt", "acme.sh",
-    "supervisor", "gunicorn", "uwsgi", "celery", "jupyter",
+    "certbot",
+    "ansible",
+    "salt-minion",
+    "salt-call",
+    "pip",
+    "pip3",
+    "apt",
+    "apt-get",
+    "yum",
+    "dnf",
+    "pacman",
+    "snap",
+    "flatpak",
+    "git",
+    "curl",
+    "wget",
+    "ssh",
+    "scp",
+    "rsync",
+    "fail2ban",
+    "unattended-upgrade",
+    "cloud-init",
+    "aws",
+    "gcloud",
+    "az",
+    "docker",
+    "podman",
+    "kubectl",
+    "helm",
+    "terraform",
+    "letsencrypt",
+    "acme.sh",
+    "supervisor",
+    "gunicorn",
+    "uwsgi",
+    "celery",
+    "jupyter",
 ];
 
 /// Suspicious cmdline flags/patterns that indicate crypto mining.
@@ -429,9 +459,9 @@ impl ProcessModule {
             // Skip known legitimate tools that use python/shell with sockets.
             // Check the full cmdline (not just process name) because tools like
             // certbot run as "python3 /snap/certbot/.../certbot".
-            let is_legitimate_tool = KNOWN_LEGITIMATE_TOOLS.iter().any(|tool| {
-                cmdline_lower.contains(tool)
-            });
+            let is_legitimate_tool = KNOWN_LEGITIMATE_TOOLS
+                .iter()
+                .any(|tool| cmdline_lower.contains(tool));
 
             if is_legitimate_tool {
                 debug!(
@@ -658,8 +688,12 @@ impl ScanModule for ProcessModule {
                 if let Ok(pid) = pid_str.parse::<u32>() {
                     if let Some(container) = crate::util::container::detect_container(pid) {
                         threat.container_id = Some(container.id.clone());
-                        threat.details.insert("container_id".to_string(), container.id);
-                        threat.details.insert("container_runtime".to_string(), container.runtime);
+                        threat
+                            .details
+                            .insert("container_id".to_string(), container.id);
+                        threat
+                            .details
+                            .insert("container_runtime".to_string(), container.runtime);
                         if let Some(name) = container.name {
                             threat.details.insert("container_name".to_string(), name);
                         }
@@ -756,11 +790,7 @@ mod tests {
             let is_legitimate = KNOWN_LEGITIMATE_TOOLS
                 .iter()
                 .any(|tool| cmd_lower.contains(tool));
-            assert!(
-                is_legitimate,
-                "Certbot should be whitelisted: {}",
-                cmd
-            );
+            assert!(is_legitimate, "Certbot should be whitelisted: {}", cmd);
         }
     }
 

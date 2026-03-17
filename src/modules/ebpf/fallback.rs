@@ -1,6 +1,5 @@
 use anyhow::Result;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::core::threat::ThreatEvent;
 

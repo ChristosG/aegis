@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 pub fn sha256_file(path: &Path) -> Result<String> {
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path)
+    let mut file = std::fs::File::open(path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         .with_context(|| format!("Failed to open file for hashing: {}", path.display()))?;
 
     let mut hasher = Sha256::new();

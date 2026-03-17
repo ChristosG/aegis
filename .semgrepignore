@@ -1,0 +1,4 @@
+# Semgrep ignore patterns
+# Test fixtures and generated files
+tests/fixtures/
+target/

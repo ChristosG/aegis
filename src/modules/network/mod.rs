@@ -272,13 +272,12 @@ impl NetworkModule {
                     remote_ip, port_count, self.config.port_scan_threshold
                 );
 
-                let mut event =
-                    ThreatEvent::new(ThreatType::PortScan, "network", &description)
-                        .with_source_ip(*remote_ip)
-                        .with_detail("unique_ports", port_count.to_string())
-                        .with_detail("threshold", self.config.port_scan_threshold.to_string())
-                        .with_detail("sample_ports", &ports_str)
-                        .with_detail("target_ports_full", &full_ports_str);
+                let mut event = ThreatEvent::new(ThreatType::PortScan, "network", &description)
+                    .with_source_ip(*remote_ip)
+                    .with_detail("unique_ports", port_count.to_string())
+                    .with_detail("threshold", self.config.port_scan_threshold.to_string())
+                    .with_detail("sample_ports", &ports_str)
+                    .with_detail("target_ports_full", &full_ports_str);
 
                 if !services_str.is_empty() {
                     event = event.with_detail("target_services", &services_str);
@@ -531,11 +530,10 @@ impl NetworkModule {
                     {
                         if let Ok(inode) = inode_str.parse::<u64>() {
                             map.entry(inode).or_insert_with(|| {
-                                let name =
-                                    std::fs::read_to_string(format!("/proc/{}/comm", pid))
-                                        .unwrap_or_default()
-                                        .trim()
-                                        .to_string();
+                                let name = std::fs::read_to_string(format!("/proc/{}/comm", pid))
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
                                 (pid, name)
                             });
                         }

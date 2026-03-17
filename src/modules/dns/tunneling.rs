@@ -30,10 +30,7 @@ mod tests {
 
     #[test]
     fn test_sld_trailing_dot() {
-        assert_eq!(
-            extract_second_level_domain("example.com."),
-            "example.com"
-        );
+        assert_eq!(extract_second_level_domain("example.com."), "example.com");
     }
 
     #[test]

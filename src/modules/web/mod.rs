@@ -487,12 +487,10 @@ impl ScanModule for WebModule {
                         let min_ts = *timestamps.iter().min().unwrap();
                         let max_ts = *timestamps.iter().max().unwrap();
                         let window_secs = max_ts - min_ts;
-                        event =
-                            event.with_detail("time_window", format!("{}s", window_secs));
+                        event = event.with_detail("time_window", format!("{}s", window_secs));
                         if window_secs > 0 {
                             let rpm = (total_count as f64 / window_secs as f64) * 60.0;
-                            event = event
-                                .with_detail("requests_per_minute", format!("{:.1}", rpm));
+                            event = event.with_detail("requests_per_minute", format!("{:.1}", rpm));
                         }
                     }
                 }

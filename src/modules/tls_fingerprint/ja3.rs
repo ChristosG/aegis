@@ -23,9 +23,10 @@ pub fn compute_ja3(
         join_u8(point_formats),
     );
 
+    // Aegis uses SHA-256 instead of the canonical MD5 for JA3.
+    // Known-bad fingerprint databases must use SHA-256 hashes to match.
     let mut hasher = Sha256::new();
     hasher.update(ja3_string.as_bytes());
-    // JA3 uses MD5, but we use SHA-256 for security
     hex::encode(hasher.finalize())
 }
 

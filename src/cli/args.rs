@@ -281,8 +281,15 @@ impl Commands {
                 ..
             } => {
                 // If no flag is set, run everything.
-                if !network && !processes && !files && !auth && !web && !intel
-                    && !dns && !rootkit && !ssh_session
+                if !network
+                    && !processes
+                    && !files
+                    && !auth
+                    && !web
+                    && !intel
+                    && !dns
+                    && !rootkit
+                    && !ssh_session
                 {
                     return None;
                 }

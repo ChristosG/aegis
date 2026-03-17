@@ -28,10 +28,26 @@ impl AuthModule {
 /// Parsed representation of a single auth log entry.
 #[derive(Debug)]
 enum AuthEvent {
-    FailedLogin { username: String, ip: String, port: String },
-    AcceptedLogin { username: String, ip: String, port: String, method: String },
-    InvalidUser { username: String, ip: String },
-    RootLogin { ip: String, method: String, port: String },
+    FailedLogin {
+        username: String,
+        ip: String,
+        port: String,
+    },
+    AcceptedLogin {
+        username: String,
+        ip: String,
+        port: String,
+        method: String,
+    },
+    InvalidUser {
+        username: String,
+        ip: String,
+    },
+    RootLogin {
+        ip: String,
+        method: String,
+        port: String,
+    },
 }
 
 /// Compiled set of regexes for auth log parsing.
@@ -50,10 +66,8 @@ impl AuthPatterns {
                 r"Failed password for (?:invalid user )?(\S+) from (\S+) port (\d+)",
             )
             .expect("failed password regex"),
-            accepted: Regex::new(
-                r"Accepted (password|publickey) for (\S+) from (\S+) port (\d+)",
-            )
-            .expect("accepted password regex"),
+            accepted: Regex::new(r"Accepted (password|publickey) for (\S+) from (\S+) port (\d+)")
+                .expect("accepted password regex"),
             invalid_user: Regex::new(r"Invalid user (\S+) from (\S+)").expect("invalid user regex"),
             root_login: Regex::new(r"Accepted (password|publickey) for root from (\S+) port (\d+)")
                 .expect("root login regex"),
@@ -108,7 +122,12 @@ impl AuthPatterns {
             let username = caps[2].to_string();
             let ip = caps[3].to_string();
             let port = caps[4].to_string();
-            events.push(AuthEvent::AcceptedLogin { username, ip, port, method });
+            events.push(AuthEvent::AcceptedLogin {
+                username,
+                ip,
+                port,
+                method,
+            });
         } else if let Some(caps) = self.invalid_user.captures(line) {
             let username = caps[1].to_string();
             let ip = caps[2].to_string();
@@ -181,9 +200,17 @@ impl ScanModule for AuthModule {
                 for event in events {
                     match event {
                         AuthEvent::FailedLogin { username, ip, port } => {
-                            failed_by_ip.entry(ip).or_default().push((username, port, ts));
+                            failed_by_ip
+                                .entry(ip)
+                                .or_default()
+                                .push((username, port, ts));
                         }
-                        AuthEvent::AcceptedLogin { username, ip, port, method } => {
+                        AuthEvent::AcceptedLogin {
+                            username,
+                            ip,
+                            port,
+                            method,
+                        } => {
                             successful_logins.push((username, ip, port, method));
                         }
                         AuthEvent::InvalidUser { username, ip } => {
@@ -349,10 +376,10 @@ mod tests {
         let line =
             "Mar 12 10:15:32 server sshd[12345]: Failed password for admin from 192.168.1.100 port 22";
         let events = patterns.parse_line(line);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
-            if username == "admin" && ip == "192.168.1.100" && port == "22")));
+        assert!(events.iter().any(
+            |e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
+            if username == "admin" && ip == "192.168.1.100" && port == "22")
+        ));
     }
 
     #[test]
@@ -360,10 +387,10 @@ mod tests {
         let patterns = AuthPatterns::compile();
         let line = "Mar 12 10:15:32 server sshd[12345]: Failed password for invalid user test from 10.0.0.5 port 2222";
         let events = patterns.parse_line(line);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
-            if username == "test" && ip == "10.0.0.5" && port == "2222")));
+        assert!(events.iter().any(
+            |e| matches!(e, AuthEvent::FailedLogin { username, ip, port }
+            if username == "test" && ip == "10.0.0.5" && port == "2222")
+        ));
     }
 
     #[test]
@@ -372,10 +399,10 @@ mod tests {
         let line =
             "Mar 12 10:16:00 server sshd[12346]: Accepted password for admin from 10.0.0.1 port 22";
         let events = patterns.parse_line(line);
-        assert!(events
-            .iter()
-            .any(|e| matches!(e, AuthEvent::AcceptedLogin { username, ip, port, method }
-            if username == "admin" && ip == "10.0.0.1" && port == "22" && method == "password")));
+        assert!(events.iter().any(
+            |e| matches!(e, AuthEvent::AcceptedLogin { username, ip, port, method }
+            if username == "admin" && ip == "10.0.0.1" && port == "22" && method == "password")
+        ));
     }
 
     #[test]

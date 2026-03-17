@@ -58,14 +58,16 @@ fn is_ufw_active() -> bool {
         .arg("status")
         .output()
         .map(|o| {
-            o.status.success()
-                && String::from_utf8_lossy(&o.stdout).contains("Status: active")
+            o.status.success() && String::from_utf8_lossy(&o.stdout).contains("Status: active")
         })
         .unwrap_or(false)
 }
 
 fn check_default_deny_policy() -> bool {
-    if let Ok(output) = Command::new("iptables").args(["-L", "INPUT", "-n"]).output() {
+    if let Ok(output) = Command::new("iptables")
+        .args(["-L", "INPUT", "-n"])
+        .output()
+    {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(first_line) = stdout.lines().next() {
             return first_line.contains("DROP") || first_line.contains("REJECT");

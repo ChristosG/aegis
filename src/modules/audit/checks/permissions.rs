@@ -5,40 +5,13 @@ use crate::modules::audit::CisCheckResult;
 
 /// Check critical file permissions according to CIS benchmarks.
 pub fn check_permissions() -> Vec<CisCheckResult> {
-    let mut results = Vec::new();
-
-    // 6.1.2 - Ensure permissions on /etc/passwd
-    results.push(check_file_perms(
-        "6.1.2",
-        "/etc/passwd",
-        0o644,
-    ));
-
-    // 6.1.3 - Ensure permissions on /etc/shadow
-    results.push(check_file_perms(
-        "6.1.3",
-        "/etc/shadow",
-        0o640,
-    ));
-
-    // 6.1.4 - Ensure permissions on /etc/group
-    results.push(check_file_perms(
-        "6.1.4",
-        "/etc/group",
-        0o644,
-    ));
-
-    // 6.1.5 - Ensure permissions on /etc/gshadow
-    results.push(check_file_perms(
-        "6.1.5",
-        "/etc/gshadow",
-        0o640,
-    ));
-
-    // 6.1.9 - Ensure no world-writable files exist in critical dirs
-    results.push(check_no_world_writable());
-
-    results
+    vec![
+        check_file_perms("6.1.2", "/etc/passwd", 0o644),
+        check_file_perms("6.1.3", "/etc/shadow", 0o640),
+        check_file_perms("6.1.4", "/etc/group", 0o644),
+        check_file_perms("6.1.5", "/etc/gshadow", 0o640),
+        check_no_world_writable(),
+    ]
 }
 
 fn check_file_perms(id: &str, path: &str, max_mode: u32) -> CisCheckResult {

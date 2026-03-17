@@ -143,10 +143,10 @@ fn extract_audit_command(line: &str) -> String {
         let key = format!("a{}=", i);
         if let Some(pos) = line.find(&key) {
             let rest = &line[pos + key.len()..];
-            let value = if rest.starts_with('"') {
+            let value = if let Some(stripped) = rest.strip_prefix('"') {
                 // Quoted value
-                let end = rest[1..].find('"').map(|p| p + 1).unwrap_or(rest.len());
-                &rest[1..end]
+                let end = stripped.find('"').unwrap_or(stripped.len());
+                &stripped[..end]
             } else {
                 // Unquoted value (hex-encoded or simple)
                 rest.split_whitespace().next().unwrap_or("")

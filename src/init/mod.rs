@@ -239,9 +239,9 @@ pub fn run_init(config: &AegisConfig, flags: &InitFlags) -> Result<()> {
 
             // Generate API token now so the user can see it
             let token_file = &config.dashboard.token_file;
-            let token_path = std::path::Path::new(token_file);
+            let token_path = std::path::Path::new(token_file); // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
             let token = if token_path.exists() {
-                std::fs::read_to_string(token_path)
+                std::fs::read_to_string(token_path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
                     .unwrap_or_default()
                     .trim()
                     .to_string()
@@ -446,7 +446,7 @@ pub fn build_baseline_map(
     let mut error_count = 0u64;
 
     for watch_path in watch_paths {
-        let path = Path::new(watch_path);
+        let path = Path::new(watch_path); // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         if !path.exists() {
             continue;
         }

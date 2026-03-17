@@ -37,7 +37,10 @@ impl DnsModule {
                 // Domain is first token
                 let domain = rest.split_whitespace().next()?;
                 // Source IP after "from "
-                let source_ip = rest.split(" from ").nth(1).and_then(|s| s.split_whitespace().next());
+                let source_ip = rest
+                    .split(" from ")
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next());
                 return Some(DnsQuery {
                     domain: domain.to_string(),
                     query_type: qtype.to_string(),
@@ -96,36 +99,45 @@ impl ScanModule for DnsModule {
                 if let Some(query) = Self::parse_dns_query(line) {
                     // Skip whitelisted domains
                     let domain_lower = query.domain.to_lowercase();
-                    if self.config.whitelist_domains.iter().any(|w| domain_lower.ends_with(w)) {
+                    if self
+                        .config
+                        .whitelist_domains
+                        .iter()
+                        .any(|w| domain_lower.ends_with(w))
+                    {
                         continue;
                     }
 
-                    // DGA detection: check entropy of domain labels
+                    // DGA detection: check entropy of the registrable domain label
+                    // (second-to-last part, e.g. "evil" in "sub.evil.com")
                     let labels: Vec<&str> = query.domain.split('.').collect();
-                    if let Some(sld) = labels.first() {
-                        if sld.len() >= self.config.dga_min_length {
-                            let ent = entropy::shannon_entropy(sld);
-                            if ent > self.config.dga_entropy_threshold {
-                                let mut event = ThreatEvent::new(
-                                    ThreatType::DgaDomain,
-                                    "dns",
-                                    format!(
-                                        "Possible DGA domain detected: {} (entropy: {:.2})",
-                                        query.domain, ent
-                                    ),
-                                )
-                                .with_detail("domain", &query.domain)
-                                .with_detail("entropy", format!("{:.2}", ent))
-                                .with_detail("query_type", &query.query_type);
+                    let sld_label = if labels.len() >= 2 {
+                        labels[labels.len() - 2]
+                    } else {
+                        labels.first().copied().unwrap_or("")
+                    };
+                    if sld_label.len() >= self.config.dga_min_length {
+                        let ent = entropy::shannon_entropy(sld_label);
+                        if ent > self.config.dga_entropy_threshold {
+                            let mut event = ThreatEvent::new(
+                                ThreatType::DgaDomain,
+                                "dns",
+                                format!(
+                                    "Possible DGA domain detected: {} (entropy: {:.2})",
+                                    query.domain, ent
+                                ),
+                            )
+                            .with_detail("domain", &query.domain)
+                            .with_detail("entropy", format!("{:.2}", ent))
+                            .with_detail("query_type", &query.query_type);
 
-                                if let Some(ref ip) = query.source_ip {
-                                    if let Ok(addr) = ip.parse() {
-                                        event = event.with_source_ip(addr);
-                                    }
+                            if let Some(ref ip) = query.source_ip {
+                                if let Ok(addr) = ip.parse() {
+                                    event = event.with_source_ip(addr);
                                 }
-
-                                threats.push(event);
                             }
+
+                            threats.push(event);
                         }
                     }
 
@@ -173,7 +185,11 @@ impl ScanModule for DnsModule {
         let _ = cursors.save(&cursor_path);
 
         if !threats.is_empty() {
-            info!(count = threats.len(), "DNS module detected {} threat(s)", threats.len());
+            info!(
+                count = threats.len(),
+                "DNS module detected {} threat(s)",
+                threats.len()
+            );
         }
 
         Ok(threats)
@@ -218,7 +234,8 @@ mod tests {
 
     #[test]
     fn test_parse_dnsmasq_query() {
-        let line = "Mar 17 10:00:01 server dnsmasq[1234]: query[A] evil.example.com from 192.168.1.5";
+        let line =
+            "Mar 17 10:00:01 server dnsmasq[1234]: query[A] evil.example.com from 192.168.1.5";
         let query = DnsModule::parse_dns_query(line).unwrap();
         assert_eq!(query.domain, "evil.example.com");
         assert_eq!(query.query_type, "A");
@@ -227,7 +244,8 @@ mod tests {
 
     #[test]
     fn test_parse_resolved_query() {
-        let line = "Mar 17 10:00:01 server systemd-resolved[456]: Outgoing query suspicious.test.com IN A";
+        let line =
+            "Mar 17 10:00:01 server systemd-resolved[456]: Outgoing query suspicious.test.com IN A";
         // Pattern matches " query " substring
         // Need a line that contains "systemd-resolved[" and " query "
         let adjusted_line = "Mar 17 10:00:01 server systemd-resolved[456]: some query suspicious.test.com IN A stuff";

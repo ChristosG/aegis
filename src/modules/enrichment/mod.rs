@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::config::defaults::resolve_path;
 use crate::config::schema::EnrichmentConfig;
@@ -46,12 +45,18 @@ pub struct GreyNoiseResult {
 pub struct EnrichmentService {
     config: EnrichmentConfig,
     cache_path: PathBuf,
+    client: reqwest::Client,
 }
 
 impl EnrichmentService {
     pub fn new(config: EnrichmentConfig) -> Self {
         let cache_path = resolve_path("~/.aegis/enrichment_cache.json");
-        Self { config, cache_path }
+        let client = reqwest::Client::new();
+        Self {
+            config,
+            cache_path,
+            client,
+        }
     }
 
     /// Enrich an IP address with threat intelligence from configured APIs.
@@ -140,8 +145,8 @@ impl EnrichmentService {
     }
 
     async fn query_abuseipdb(&self, ip: &str) -> Result<AbuseIpDbResult> {
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self
+            .client
             .get("https://api.abuseipdb.com/api/v2/check")
             .header("Key", &self.config.abuseipdb_key)
             .header("Accept", "application/json")
@@ -155,10 +160,7 @@ impl EnrichmentService {
         Ok(AbuseIpDbResult {
             abuse_confidence_score: data["abuseConfidenceScore"].as_u64().unwrap_or(0) as u32,
             total_reports: data["totalReports"].as_u64().unwrap_or(0) as u32,
-            country_code: data["countryCode"]
-                .as_str()
-                .unwrap_or("")
-                .to_string(),
+            country_code: data["countryCode"].as_str().unwrap_or("").to_string(),
             isp: data["isp"].as_str().unwrap_or("").to_string(),
         })
     }
@@ -177,12 +179,20 @@ impl EnrichmentService {
         Ok(ShodanResult {
             ports: body["ports"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u16)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u16))
+                        .collect()
+                })
                 .unwrap_or_default(),
             os: body["os"].as_str().map(String::from),
             hostnames: body["hostnames"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
         })
     }

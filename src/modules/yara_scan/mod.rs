@@ -54,7 +54,10 @@ impl ScanModule for YaraScanModule {
         // 5. Read /proc/[pid]/exe and scan with compiled rules
         // 6. Report matches as YaraMatch threats
 
-        info!("YARA scan complete (rules dir: {})", self.rules_dir.display());
+        info!(
+            "YARA scan complete (rules dir: {})",
+            self.rules_dir.display()
+        );
 
         Ok(threats)
     }

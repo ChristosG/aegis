@@ -147,6 +147,9 @@ pub fn create_modules(config: &AegisConfig) -> Vec<Arc<dyn ScanModule>> {
                     config.yara.clone(),
                 )));
             }
+            "ebpf" if config.ebpf.enabled => {
+                modules.push(Arc::new(ebpf::EbpfModule::new(config.ebpf.clone())));
+            }
             name => {
                 tracing::warn!(module = name, "Unknown or disabled module, skipping");
             }

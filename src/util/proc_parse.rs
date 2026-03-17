@@ -17,7 +17,7 @@ pub struct ProcInfo {
 ///
 /// Returns an error if the file does not exist or is not readable.
 pub fn read_proc_file(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path)
+    std::fs::read_to_string(path) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         .with_context(|| format!("Failed to read proc file: {}", path.display()))
 }
 
@@ -74,25 +74,25 @@ pub fn parse_hex_port(hex: &str) -> Result<u16> {
 
 /// Read basic process info from /proc/<pid>.
 pub fn read_proc_info(pid: u32) -> Result<ProcInfo> {
-    let proc_dir = Path::new("/proc").join(pid.to_string());
+    let proc_dir = Path::new("/proc").join(pid.to_string()); // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
 
-    let comm = std::fs::read_to_string(proc_dir.join("comm"))
+    let comm = std::fs::read_to_string(proc_dir.join("comm")) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         .unwrap_or_default()
         .trim()
         .to_string();
 
-    let exe = std::fs::read_link(proc_dir.join("exe"))
+    let exe = std::fs::read_link(proc_dir.join("exe")) // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         .ok()
         .map(|p| p.to_string_lossy().to_string());
 
-    let cmdline_raw = std::fs::read_to_string(proc_dir.join("cmdline")).unwrap_or_default();
+    let cmdline_raw = std::fs::read_to_string(proc_dir.join("cmdline")).unwrap_or_default(); // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let cmdline: Vec<String> = cmdline_raw
         .split('\0')
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect();
 
-    let status = std::fs::read_to_string(proc_dir.join("status")).unwrap_or_default();
+    let status = std::fs::read_to_string(proc_dir.join("status")).unwrap_or_default(); // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
     let uid = status
         .lines()
         .find(|l| l.starts_with("Uid:"))

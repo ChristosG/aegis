@@ -5,7 +5,7 @@ pub mod probes;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::schema::EbpfConfig;
 use crate::core::threat::ThreatEvent;
@@ -21,6 +21,7 @@ impl EbpfModule {
     }
 
     /// Check if the kernel supports eBPF with BTF (BPF Type Format).
+    #[allow(dead_code)]
     fn has_btf_support() -> bool {
         std::path::Path::new("/sys/kernel/btf/vmlinux").exists()
     }

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::config::schema::RootkitConfig;
 use crate::core::threat::{ThreatEvent, ThreatType};
@@ -78,7 +78,10 @@ impl RootkitModule {
                     ThreatEvent::new(
                         ThreatType::LdPreloadHook,
                         "rootkit",
-                        format!("System-wide LD_PRELOAD found in /etc/ld.so.preload: {}", content),
+                        format!(
+                            "System-wide LD_PRELOAD found in /etc/ld.so.preload: {}",
+                            content
+                        ),
                     )
                     .with_detail("file", "/etc/ld.so.preload")
                     .with_detail("libraries", content)
@@ -97,14 +100,14 @@ impl RootkitModule {
                     if let Ok(environ) = fs::read_to_string(&environ_path) {
                         // environ is NUL-separated
                         for var in environ.split('\0') {
-                            if var.starts_with("LD_PRELOAD=") {
-                                let value = &var[11..];
+                            if let Some(value) = var.strip_prefix("LD_PRELOAD=") {
                                 if !value.is_empty() {
                                     // Get process name for context
-                                    let comm = fs::read_to_string(format!("/proc/{}/comm", pid_str))
-                                        .unwrap_or_default()
-                                        .trim()
-                                        .to_string();
+                                    let comm =
+                                        fs::read_to_string(format!("/proc/{}/comm", pid_str))
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
 
                                     threats.push(
                                         ThreatEvent::new(
@@ -141,13 +144,7 @@ impl RootkitModule {
         };
 
         // Known suspicious patterns in kernel symbols
-        let suspicious_patterns = [
-            "rootkit",
-            "hide_pid",
-            "hidden_",
-            "invisible",
-            "stealth",
-        ];
+        let suspicious_patterns = ["rootkit", "hide_pid", "hidden_", "invisible", "stealth"];
 
         for line in kallsyms.lines() {
             let lower = line.to_lowercase();
@@ -192,10 +189,7 @@ impl RootkitModule {
                             ThreatEvent::new(
                                 ThreatType::RootkitDetected,
                                 "rootkit",
-                                format!(
-                                    "Suspicious hidden file in {}: {}",
-                                    dir_path, name_str
-                                ),
+                                format!("Suspicious hidden file in {}: {}", dir_path, name_str),
                             )
                             .with_detail("file", entry.path().to_string_lossy().to_string())
                             .with_detail("directory", dir_path)
@@ -214,27 +208,8 @@ impl RootkitModule {
         let mut threats = Vec::new();
 
         // Check if ld.so.preload was recently modified
-        let preload_path = Path::new("/etc/ld.so.preload");
-        if preload_path.exists() {
-            if let Ok(metadata) = preload_path.metadata() {
-                if let Ok(modified) = metadata.modified() {
-                    if let Ok(age) = modified.elapsed() {
-                        // Flag if modified in last 24 hours
-                        if age.as_secs() < 86400 {
-                            threats.push(
-                                ThreatEvent::new(
-                                    ThreatType::RootkitDetected,
-                                    "rootkit",
-                                    "ld.so.preload was recently modified (last 24h)".to_string(),
-                                )
-                                .with_detail("file", "/etc/ld.so.preload")
-                                .with_detail("detection_method", "shared_lib_mtime"),
-                            );
-                        }
-                    }
-                }
-            }
-        }
+        // Note: ld.so.preload content is already checked by check_ld_preload().
+        // We skip the mtime check here to avoid duplicate alerts.
 
         // Check for unexpected entries in /etc/ld.so.conf.d/
         let ld_conf_dir = Path::new("/etc/ld.so.conf.d");
@@ -248,7 +223,8 @@ impl RootkitModule {
                                 continue;
                             }
                             // Flag paths pointing to tmp/shm directories
-                            if line.starts_with("/tmp") || line.starts_with("/dev/shm")
+                            if line.starts_with("/tmp")
+                                || line.starts_with("/dev/shm")
                                 || line.starts_with("/var/tmp")
                             {
                                 threats.push(
@@ -261,7 +237,10 @@ impl RootkitModule {
                                             line
                                         ),
                                     )
-                                    .with_detail("config_file", entry.path().to_string_lossy().to_string())
+                                    .with_detail(
+                                        "config_file",
+                                        entry.path().to_string_lossy().to_string(),
+                                    )
                                     .with_detail("suspicious_path", line)
                                     .with_detail("detection_method", "ld_conf"),
                                 );
@@ -285,8 +264,15 @@ impl ScanModule for RootkitModule {
     async fn scan(&self) -> Result<Vec<ThreatEvent>> {
         let mut threats = Vec::new();
 
+        // Hidden process check probes up to 65K PIDs with syscalls —
+        // offload to a blocking thread to avoid stalling the async runtime.
         if self.config.check_hidden_processes {
-            threats.extend(self.check_hidden_processes());
+            let config = self.config.clone();
+            let module = RootkitModule::new(config);
+            let hidden = tokio::task::spawn_blocking(move || module.check_hidden_processes())
+                .await
+                .unwrap_or_default();
+            threats.extend(hidden);
         }
 
         if self.config.check_ld_preload {

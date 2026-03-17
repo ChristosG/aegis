@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::Path;
 
 /// Information about a container a process is running in.
 #[derive(Debug, Clone)]
@@ -65,16 +64,9 @@ pub fn detect_container(pid: u32) -> Option<ContainerInfo> {
         }
     }
 
-    // Also check /.dockerenv as a fallback
-    if Path::new("/.dockerenv").exists() {
-        // We're inside a container but couldn't parse the ID
-        return Some(ContainerInfo {
-            id: "unknown".to_string(),
-            name: None,
-            runtime: "docker".to_string(),
-        });
-    }
-
+    // Note: we do NOT check /.dockerenv as a fallback because that would
+    // detect Aegis's OWN container, not the target pid's. If Aegis itself
+    // runs in Docker, every host process would be mislabeled as containerized.
     None
 }
 
@@ -90,10 +82,7 @@ pub fn detect_escape_attempt(pid: u32, _container: &ContainerInfo) -> bool {
         let proc_ns = format!("{}/{}", ns_path, ns);
         let init_ns = format!("{}/{}", init_ns_path, ns);
 
-        if let (Ok(proc_link), Ok(init_link)) = (
-            fs::read_link(&proc_ns),
-            fs::read_link(&init_ns),
-        ) {
+        if let (Ok(proc_link), Ok(init_link)) = (fs::read_link(&proc_ns), fs::read_link(&init_ns)) {
             if proc_link == init_link {
                 // Process shares a namespace with host init - suspicious for a container
                 return true;
@@ -134,10 +123,7 @@ pub fn detect_escape_attempt(pid: u32, _container: &ContainerInfo) -> bool {
 fn get_container_name_docker(container_id: &str) -> Option<String> {
     let short_id = &container_id[..12.min(container_id.len())];
     // Try reading from the Docker API socket
-    let hostname_path = format!(
-        "/var/lib/docker/containers/{}/hostname",
-        container_id
-    );
+    let hostname_path = format!("/var/lib/docker/containers/{}/hostname", container_id);
     fs::read_to_string(&hostname_path)
         .ok()
         .map(|s| s.trim().to_string())
@@ -164,7 +150,8 @@ mod tests {
 
     #[test]
     fn test_extract_container_id_docker() {
-        let line = "12:devices:/docker/abc123def456789abcdef0123456789abcdef0123456789abcdef01234567";
+        let line =
+            "12:devices:/docker/abc123def456789abcdef0123456789abcdef0123456789abcdef01234567";
         let id = extract_container_id_from_cgroup(line);
         assert_eq!(id, Some("abc123def456".to_string()));
     }

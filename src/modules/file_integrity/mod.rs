@@ -440,6 +440,7 @@ impl FileIntegrityModule {
         baseline: &HashMap<PathBuf, String>,
         threats: &mut Vec<ThreatEvent>,
     ) -> Result<()> {
+        // nosemgrep: rust.actix.path-traversal.tainted-path.tainted-path
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) => {

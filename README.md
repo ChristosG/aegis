@@ -19,7 +19,7 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-green">
   <img alt="Tests" src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ChristosG/aegis/main/.github/badges/tests.json">
-  <img alt="unsafe" src="https://img.shields.io/badge/unsafe-forbidden-red">
+  <img alt="Semgrep" src="https://img.shields.io/badge/semgrep-0_findings-brightgreen">
 </p>
 
 <h4 align="center">Get Aegis running in 30 seconds</h4>
