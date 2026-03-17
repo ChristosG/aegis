@@ -1,8 +1,8 @@
 Package: aegis
-Version: 0.14.0-1
+Version: 1.0.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 9375
+Installed-Size: 9430
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis-full
@@ -10,21 +10,21 @@ Replaces: aegis-full
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis/aegis_0.14.0-1_amd64.deb
-Size: 3307888
-SHA256: 3a7e5bcbd6e47fa6388802cbd0dd52b5d880eb62655d7860f73b3be27e7fbb06
-SHA1: 547809bf20743693f62b7120ccb66c0523d348ca
-MD5sum: bca3d0abc33fdc47753367fdaf34b7c5
+Filename: pool/main/a/aegis/aegis_1.0.0-1_amd64.deb
+Size: 3326656
+SHA256: a9b376dd66ade945f4e2bf8f1cdf3dc07da7f7e61aaeea210872e9bc2de5c35b
+SHA1: df929becd1872f7d1208b1ac3f41afb01a9d0eb5
+MD5sum: 43d1ea0393b6c32a5f08d7dc11ca2cbd
 Description: Linux Security Monitoring & Response Tool
  Aegis monitors your Linux server for network attacks, malware, brute-force
  attempts, file tampering, web exploits, and known-malicious IPs, then
  automatically blocks them. Single static binary.
 
 Package: aegis-full
-Version: 0.14.0-1
+Version: 1.0.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 11148
+Installed-Size: 11214
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis
@@ -32,11 +32,11 @@ Replaces: aegis
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis-full/aegis-full_0.14.0-1_amd64.deb
-Size: 3763772
-SHA256: a26b64aa955900377dc656571310c2c685db024009178b99bff1936717798275
-SHA1: 986146e7dd8f8c00f216de9258adc5d99a7f95bd
-MD5sum: 0826d12c638e64a35bb4eb2410f8ba2e
+Filename: pool/main/a/aegis-full/aegis-full_1.0.0-1_amd64.deb
+Size: 3780980
+SHA256: 1cb2249f4d3f0f8424645e70a0af398c694078d4a7284b0cb408de3cba3c68dd
+SHA1: 71a6c07b9bea768e19737016f6950cde7a62cb1e
+MD5sum: 85b467227cd3faac2939af632bf3d842
 Description: Linux Security Monitoring & Response Tool
  Aegis with web dashboard. Monitors your Linux server for network attacks,
  malware, brute-force attempts, file tampering, web exploits, and
