@@ -42,7 +42,15 @@ struct AccessLogEntry {
 /// is counted against the higher DDoS threshold to avoid false positives on
 /// legitimate real-time connections (chat, live updates, etc.).
 const WEBSOCKET_PATH_PREFIXES: &[&str] = &[
-    "/ws/", "/ws", "/wss/", "/wss", "/socket.io/", "/socket.io", "/sockjs/", "/sockjs", "/cable",
+    "/ws/",
+    "/ws",
+    "/wss/",
+    "/wss",
+    "/socket.io/",
+    "/socket.io",
+    "/sockjs/",
+    "/sockjs",
+    "/cable",
     "/hub",
 ];
 
@@ -59,7 +67,6 @@ const SCANNER_PATHS: &[&str] = &[
     "/console",
     "/manager/html",
     "/solr",
-    "/api/v1",
     "/debug",
     "/.well-known",
     "/server-status",
@@ -394,8 +401,9 @@ impl ScanModule for WebModule {
         for entry in &all_entries {
             let request_path = entry.request.split_whitespace().nth(1).unwrap_or("");
             let is_ws_status = entry.status == 101;
-            let is_ws_path =
-                WEBSOCKET_PATH_PREFIXES.iter().any(|p| request_path.starts_with(p));
+            let is_ws_path = WEBSOCKET_PATH_PREFIXES
+                .iter()
+                .any(|p| request_path.starts_with(p));
             let is_ht = is_ws_status
                 || is_ws_path
                 || (!ht_paths.is_empty()
@@ -450,15 +458,19 @@ impl ScanModule for WebModule {
                 effective_threshold = ht_threshold;
             }
 
-            // If we have timestamps, calculate requests per minute more accurately
+            // If we have timestamps spanning a meaningful window, calculate RPM.
+            // Require >= 10 s to avoid extrapolating short page-load bursts
+            // (e.g. 36 reqs in 3 s → 720 RPM) into false DDoS positives.
             if let Some(timestamps) = ip_timestamps.get(*ip_str) {
                 if timestamps.len() >= 2 {
                     let min_ts = *timestamps.iter().min().unwrap();
                     let max_ts = *timestamps.iter().max().unwrap();
-                    let duration_secs = (max_ts - min_ts).max(1);
-                    let rpm = (total_count as f64 / duration_secs as f64) * 60.0;
-                    if rpm >= effective_threshold as f64 {
-                        flagged = true;
+                    let duration_secs = max_ts - min_ts;
+                    if duration_secs >= 10 {
+                        let rpm = (total_count as f64 / duration_secs as f64) * 60.0;
+                        if rpm >= effective_threshold as f64 {
+                            flagged = true;
+                        }
                     }
                 }
             }
