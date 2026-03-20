@@ -208,6 +208,13 @@ fn validate_web(config: &AegisConfig, result: &mut ValidationResult) {
             .warnings
             .push("[web] ddos_threshold is 0, DDoS detection effectively disabled".to_string());
     }
+    if config.web.ddos_high_traffic_paths.is_empty() {
+        result.warnings.push(
+            "[web] ddos_high_traffic_paths is empty — WebSocket/streaming paths will use auto-detection. \
+             Set explicitly for better control (e.g. [\"/ws/\", \"/api/chat\"])"
+                .to_string(),
+        );
+    }
 }
 
 fn validate_threat_intel(config: &AegisConfig, result: &mut ValidationResult) {

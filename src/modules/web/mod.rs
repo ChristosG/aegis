@@ -37,6 +37,15 @@ struct AccessLogEntry {
     user_agent: String,
 }
 
+/// Common WebSocket path prefixes used as fallback auto-detection when no
+/// explicit `ddos_high_traffic_paths` are configured. Traffic on these paths
+/// is counted against the higher DDoS threshold to avoid false positives on
+/// legitimate real-time connections (chat, live updates, etc.).
+const WEBSOCKET_PATH_PREFIXES: &[&str] = &[
+    "/ws/", "/ws", "/wss/", "/wss", "/socket.io/", "/socket.io", "/sockjs/", "/sockjs", "/cable",
+    "/hub",
+];
+
 /// Common scanner paths that indicate automated probing.
 const SCANNER_PATHS: &[&str] = &[
     "/wp-admin",
@@ -384,10 +393,19 @@ impl ScanModule for WebModule {
 
         for entry in &all_entries {
             let request_path = entry.request.split_whitespace().nth(1).unwrap_or("");
-            let is_ht = !ht_paths.is_empty()
-                && ht_paths
-                    .iter()
-                    .any(|prefix| request_path.starts_with(prefix.as_str()));
+            let is_ws_status = entry.status == 101;
+            let is_ws_path =
+                WEBSOCKET_PATH_PREFIXES.iter().any(|p| request_path.starts_with(p));
+            let is_ht = is_ws_status
+                || is_ws_path
+                || (!ht_paths.is_empty()
+                    && ht_paths
+                        .iter()
+                        .any(|prefix| request_path.starts_with(prefix.as_str())));
+
+            if is_ws_status {
+                tracing::debug!(ip = %entry.ip, path = %request_path, "WebSocket upgrade detected, using high-traffic threshold");
+            }
 
             if is_ht {
                 *ip_ht_count.entry(entry.ip.clone()).or_insert(0) += 1;
@@ -536,9 +554,13 @@ mod tests {
     }
 
     fn sample_log_line(ip: &str, request: &str, ua: &str) -> String {
+        sample_log_line_status(ip, request, 200, ua)
+    }
+
+    fn sample_log_line_status(ip: &str, request: &str, status: u16, ua: &str) -> String {
         format!(
-            r#"{} - - [10/Oct/2023:13:55:36 +0000] "{}" 200 512 "-" "{}""#,
-            ip, request, ua
+            r#"{} - - [10/Oct/2023:13:55:36 +0000] "{}" {} 512 "-" "{}""#,
+            ip, request, status, ua
         )
     }
 
@@ -775,5 +797,102 @@ mod tests {
         assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_bytes(1_048_576), "1.0 MB");
         assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
+    }
+
+    /// Generate a log line with a specific second offset (0-59) within the
+    /// same minute, so that RPM calculations produce a meaningful rate.
+    fn sample_log_line_at_sec(ip: &str, request: &str, status: u16, ua: &str, sec: u32) -> String {
+        format!(
+            r#"{} - - [10/Oct/2023:13:55:{:02} +0000] "{}" {} 512 "-" "{}""#,
+            ip, sec, request, status, ua
+        )
+    }
+
+    #[test]
+    fn test_websocket_101_uses_high_traffic_threshold() {
+        // 150 WebSocket upgrade (status 101) requests spread over 60 s → 150 RPM.
+        // Normal threshold is 100, but these should count as high-traffic
+        // (threshold 2000), so no DDoS is flagged.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..150u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "10.0.0.50",
+                "GET /chat HTTP/1.1",
+                101,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "WebSocket 101 traffic should not trigger DDoS at normal threshold"
+        );
+    }
+
+    #[test]
+    fn test_websocket_path_uses_high_traffic_threshold() {
+        // 150 requests to /ws/ path (status 200, e.g. polling fallback) spread
+        // over 60 s → 150 RPM. Auto-detected as high-traffic by path prefix.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..150u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "10.0.0.51",
+                "GET /ws/updates HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "WebSocket path traffic should not trigger DDoS at normal threshold"
+        );
+    }
+
+    #[test]
+    fn test_normal_path_still_triggers_ddos() {
+        // 150 normal requests (status 200, non-WS path) spread over 60 s →
+        // 150 RPM, which exceeds the 100/min threshold → DDoS flagged.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..150u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "10.0.0.52",
+                "GET /api/data HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "Normal path traffic should still trigger DDoS above threshold"
+        );
     }
 }
