@@ -1,5 +1,5 @@
 Package: aegis
-Version: 2.3.0-1
+Version: 2.3.1-1
 Architecture: amd64
 Maintainer: ChristosG
 Installed-Size: 9689
@@ -10,18 +10,18 @@ Replaces: aegis-full
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis/aegis_2.3.0-1_amd64.deb
-Size: 3401440
-SHA256: 4f61d59ea1fd19b884ac045c790a15f1578e96d14245d10d4dc56889be74d3be
-SHA1: f3c94d253d78609c73d93775b6492dafc820624f
-MD5sum: 70139e67f1f3f07698dd28b7dc95470d
+Filename: pool/main/a/aegis/aegis_2.3.1-1_amd64.deb
+Size: 3399240
+SHA256: 05ee5939ef6e6972b4d6d183e009eab37f5891cb894b47f5ba74ffab38a3af12
+SHA1: 8cb1795ad063fa1f737abbab3260f063d6b1c87a
+MD5sum: e28914d1dfca7b7533973ca04358dd74
 Description: Linux Security Monitoring & Response Tool
  Aegis monitors your Linux server for network attacks, malware, brute-force
  attempts, file tampering, web exploits, and known-malicious IPs, then
  automatically blocks them. Single static binary.
 
 Package: aegis-full
-Version: 2.3.0-1
+Version: 2.3.1-1
 Architecture: amd64
 Maintainer: ChristosG
 Installed-Size: 11681
@@ -32,11 +32,11 @@ Replaces: aegis
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis-full/aegis-full_2.3.0-1_amd64.deb
-Size: 3897588
-SHA256: cfed35c9f51e648c9b303aff5b9fd3320e475412155d504281c7976e8b80a6f0
-SHA1: ac405d3961b301a82f8ac4e3feb370236172238c
-MD5sum: d17865728fb6c2351c29e0089cfb3876
+Filename: pool/main/a/aegis-full/aegis-full_2.3.1-1_amd64.deb
+Size: 3898932
+SHA256: 879c1905f735749dce3718e8ceb46b352eee7c8f727ef824fba063a311f67216
+SHA1: 7efcada1b81b103865692b85d17f891b7126dc59
+MD5sum: ed273ec6188c4c88db3cd976ee760f49
 Description: Linux Security Monitoring & Response Tool
  Aegis with web dashboard. Monitors your Linux server for network attacks,
  malware, brute-force attempts, file tampering, web exploits, and
