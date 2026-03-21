@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::Path;
 
@@ -301,6 +301,7 @@ impl NetworkModule {
         &self,
         connections: &[TcpConnection],
         inode_map: &HashMap<u64, (u32, String)>,
+        listen_ports: &HashSet<u16>,
     ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
@@ -315,8 +316,10 @@ impl NetworkModule {
                 continue;
             }
 
-            // Outbound connection: local port is ephemeral (>= 1024) and we initiated it
-            if conn.local_port < 1024 {
+            // Skip inbound connections: if the local port has a LISTEN socket,
+            // this is a server accepting a client — not an outbound connection.
+            // Also skip privileged ports (< 1024) which are always server ports.
+            if conn.local_port < 1024 || listen_ports.contains(&conn.local_port) {
                 continue;
             }
 
@@ -549,6 +552,7 @@ impl NetworkModule {
         &self,
         connections: &[TcpConnection],
         inode_map: &HashMap<u64, (u32, String)>,
+        listen_ports: &HashSet<u16>,
     ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
@@ -566,8 +570,8 @@ impl NetworkModule {
             if is_private(&conn.remote_ip) {
                 continue;
             }
-            if conn.local_port < 1024 {
-                continue; // Not outbound
+            if conn.local_port < 1024 || listen_ports.contains(&conn.local_port) {
+                continue; // Not outbound — server port accepting inbound connections
             }
             let key = (conn.remote_ip.to_string(), conn.remote_port);
             current_destinations.insert(key.clone());
@@ -652,6 +656,17 @@ impl NetworkModule {
 
         threats
     }
+
+    /// Collect the set of local ports that have a LISTEN socket.
+    /// Connections *from* these ports are inbound (server accepted them),
+    /// not outbound — so they must be excluded from outbound detectors.
+    fn listening_ports(connections: &[TcpConnection]) -> HashSet<u16> {
+        connections
+            .iter()
+            .filter(|c| c.state == tcp_state::LISTEN)
+            .map(|c| c.local_port)
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -677,13 +692,20 @@ impl ScanModule for NetworkModule {
         // Build the inode→(pid, name) map once for all detectors that need process resolution
         let inode_map = self.build_inode_to_process_map();
 
+        // Ports with LISTEN sockets — connections on these are inbound, not outbound
+        let listen_ports = Self::listening_ports(&connections);
+
         // Run all detectors
         threats.extend(self.detect_syn_flood(&connections));
         threats.extend(self.detect_port_scan(&connections));
-        threats.extend(self.detect_suspicious_outbound(&connections, &inode_map));
+        threats.extend(self.detect_suspicious_outbound(&connections, &inode_map, &listen_ports));
         threats.extend(self.detect_c2_beacon(&connections, &inode_map));
         threats.extend(self.detect_connection_rate(&connections, &inode_map));
-        threats.extend(self.detect_new_outbound_destinations(&connections, &inode_map));
+        threats.extend(self.detect_new_outbound_destinations(
+            &connections,
+            &inode_map,
+            &listen_ports,
+        ));
 
         info!(count = threats.len(), "Network scan complete");
         Ok(threats)
