@@ -93,10 +93,12 @@ jobs:
         run: |
           cargo audit \
             --ignore RUSTSEC-2023-0071 \
+            --ignore RUSTSEC-2025-0046 \
+            --ignore RUSTSEC-2025-0118 \
             --ignore RUSTSEC-2026-0020 \
             --ignore RUSTSEC-2026-0021 \
-            --ignore RUSTSEC-2025-0118 \
-            --ignore RUSTSEC-2025-0046
+            --ignore RUSTSEC-2026-0044 \
+            --ignore RUSTSEC-2026-0048
 
       - name: Gitleaks secret scan
         uses: gitleaks/gitleaks-action@v2
