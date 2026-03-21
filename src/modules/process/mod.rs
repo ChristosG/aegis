@@ -576,14 +576,20 @@ impl ProcessModule {
                 // Strip " (deleted)" suffix if present for path checking
                 let clean_path = exe_path.strip_suffix(" (deleted)").unwrap_or(exe_path);
 
-                for dir in &self.config.suspicious_dirs {
-                    if clean_path.starts_with(dir.as_str()) {
-                        suspicious = true;
-                        reason = format!(
-                            "Binary running from suspicious directory '{}': {}",
-                            dir, exe_path
-                        );
-                        break;
+                // AppImages mount via FUSE to /tmp/.mount_<name>.<rand>/
+                // and run from standard internal paths — not suspicious.
+                let is_appimage = clean_path.starts_with("/tmp/.mount_");
+
+                if !is_appimage {
+                    for dir in &self.config.suspicious_dirs {
+                        if clean_path.starts_with(dir.as_str()) {
+                            suspicious = true;
+                            reason = format!(
+                                "Binary running from suspicious directory '{}': {}",
+                                dir, exe_path
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -820,5 +826,51 @@ mod tests {
         assert_eq!(truncate_string("hello", 10), "hello");
         assert_eq!(truncate_string("hello world", 5), "hello...");
         assert_eq!(truncate_string("", 5), "");
+    }
+
+    #[test]
+    fn test_appimage_not_flagged_as_suspicious() {
+        let config = ProcessConfig {
+            suspicious_dirs: vec!["/tmp".into(), "/dev/shm".into()],
+            ..Default::default()
+        };
+        let module = ProcessModule::new(config);
+
+        let appimage_proc = ProcInfo {
+            pid: 1234,
+            name: "Viber".to_string(),
+            exe: Some("/tmp/.mount_viber.jKGeGh/usr/bin/Viber".to_string()),
+            cmdline: vec!["/tmp/.mount_viber.jKGeGh/usr/bin/Viber".to_string()],
+            uid: 1000,
+        };
+
+        let threats = module.detect_suspicious_binaries(&[appimage_proc]);
+        assert!(
+            threats.is_empty(),
+            "AppImage binary in /tmp/.mount_* should not be flagged"
+        );
+    }
+
+    #[test]
+    fn test_actual_tmp_binary_still_flagged() {
+        let config = ProcessConfig {
+            suspicious_dirs: vec!["/tmp".into(), "/dev/shm".into()],
+            ..Default::default()
+        };
+        let module = ProcessModule::new(config);
+
+        let malicious_proc = ProcInfo {
+            pid: 9999,
+            name: "payload".to_string(),
+            exe: Some("/tmp/payload".to_string()),
+            cmdline: vec!["/tmp/payload".to_string()],
+            uid: 1000,
+        };
+
+        let threats = module.detect_suspicious_binaries(&[malicious_proc]);
+        assert!(
+            !threats.is_empty(),
+            "Regular /tmp binary should still be flagged"
+        );
     }
 }
