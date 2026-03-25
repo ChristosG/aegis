@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::core::state::{AppState, BlockEntry, FileBaseline};
+use crate::core::state::{AppState, BlockEntry, FileBaseline, StrikeHistory};
 use crate::core::threat::ThreatEvent;
 
 // ---------------------------------------------------------------------------
@@ -385,6 +385,47 @@ impl Storage {
                 "Pruned expired seen-threat entries"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Strike history persistence
+    // -----------------------------------------------------------------------
+
+    /// Path to the strike history file.
+    fn strike_history_path(&self) -> PathBuf {
+        self.data_dir.join("strike_history.json")
+    }
+
+    /// Save the strike history to disk.
+    pub fn save_strike_history(&self, history: &StrikeHistory) -> Result<()> {
+        let path = self.strike_history_path();
+        let json =
+            serde_json::to_string_pretty(history).context("Failed to serialize strike history")?;
+
+        fs::write(&path, json)
+            .with_context(|| format!("Failed to write strike history: {}", path.display()))?;
+
+        set_permissions_0600(&path);
+        debug!(count = history.len(), "Strike history saved");
+        Ok(())
+    }
+
+    /// Load the strike history from disk. Returns an empty map if the file
+    /// does not exist.
+    pub fn load_strike_history(&self) -> Result<StrikeHistory> {
+        let path = self.strike_history_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let json = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read strike history: {}", path.display()))?;
+
+        let history: StrikeHistory = serde_json::from_str(&json)
+            .with_context(|| format!("Failed to parse strike history: {}", path.display()))?;
+
+        info!(count = history.len(), "Strike history loaded from disk");
+        Ok(history)
     }
 
     // -----------------------------------------------------------------------

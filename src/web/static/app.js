@@ -768,12 +768,19 @@ function showThreatDetail(t) {
     var footer = document.getElementById('modal-footer');
     footer.textContent = '';
     if (t.source_ip) {
+        var ipStr = t.source_ip;
         var blockBtn = document.createElement('button');
         blockBtn.className = 'btn-modal-confirm';
         blockBtn.textContent = 'Block IP';
-        var ipStr = t.source_ip;
         blockBtn.onclick = function() { hideModal(); blockIp(ipStr); };
         footer.appendChild(blockBtn);
+
+        var blockForeverBtn = document.createElement('button');
+        blockForeverBtn.className = 'btn-modal-confirm';
+        blockForeverBtn.style.backgroundColor = '#b91c1c';
+        blockForeverBtn.textContent = 'Block Forever';
+        blockForeverBtn.onclick = function() { hideModal(); blockIp(ipStr, true); };
+        footer.appendChild(blockForeverBtn);
     }
     var copyBtn = document.createElement('button');
     copyBtn.className = 'btn-modal-cancel';
@@ -941,6 +948,14 @@ function buildThreatsPageRow(t) {
         btn.textContent = 'Block';
         btn.onclick = function(e) { e.stopPropagation(); blockIp(ip); };
         tdActions.appendChild(btn);
+
+        var btnForever = document.createElement('button');
+        btnForever.className = 'btn-sm';
+        btnForever.style.cssText = 'background:#b91c1c;margin-left:4px';
+        btnForever.textContent = 'Ban';
+        btnForever.title = 'Block forever';
+        btnForever.onclick = function(e) { e.stopPropagation(); blockIp(ip, true); };
+        tdActions.appendChild(btnForever);
     }
     tr.appendChild(tdActions);
 
@@ -1184,17 +1199,24 @@ function viewReport() {
         });
 }
 
-function blockIp(ip) {
-    showConfirm('Block IP', 'Block IP address ' + ip + '?', function() {
+function blockIp(ip, forever) {
+    var title = forever ? 'Block IP Forever' : 'Block IP';
+    var msg = forever
+        ? 'Permanently block IP address ' + ip + '? This will never expire.'
+        : 'Block IP address ' + ip + '?';
+    showConfirm(title, msg, function() {
+        var payload = { ip: ip };
+        if (forever) payload.duration = 'forever';
         fetch('/api/block?token=' + API_TOKEN, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ip: ip })
+            body: JSON.stringify(payload)
         })
         .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
         .then(function(res) {
             if (res.ok) {
-                showResult('IP Blocked', 'Successfully blocked ' + ip, false);
+                var label = forever ? 'permanently blocked' : 'blocked';
+                showResult('IP Blocked', 'Successfully ' + label + ' ' + ip, false);
                 refreshStats();
             } else {
                 showResult('Block Failed', res.data.message || 'Unknown error', true);
@@ -1490,6 +1512,20 @@ function refreshFirewallTables() {
                 tdExpires.textContent = expiresAt ? formatTimeFull(b.expires_at) : 'Never';
                 if (expired) tdExpires.textContent += ' (expired)';
                 tr.appendChild(tdExpires);
+
+                var tdStrikes = document.createElement('td');
+                if (b.escalated) {
+                    var span = document.createElement('span');
+                    span.style.color = '#f85149';
+                    span.style.fontWeight = '600';
+                    span.textContent = b.strikes + ' (PERMA)';
+                    tdStrikes.appendChild(span);
+                } else if (b.threshold && b.threshold > 0) {
+                    tdStrikes.textContent = b.strikes + '/' + b.threshold;
+                } else {
+                    tdStrikes.textContent = (b.strikes || 0).toString();
+                }
+                tr.appendChild(tdStrikes);
 
                 var tdAuto = document.createElement('td');
                 tdAuto.textContent = b.auto ? 'Yes' : 'No';

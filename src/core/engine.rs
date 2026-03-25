@@ -98,6 +98,22 @@ impl Engine {
             }
         }
 
+        // Restore strike history for repeat offender tracking.
+        match storage.load_strike_history() {
+            Ok(history) if !history.is_empty() => {
+                info!(
+                    count = history.len(),
+                    "Restoring {} strike record(s) from disk",
+                    history.len()
+                );
+                initial_state.strike_history = history;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to load strike history");
+            }
+            _ => {}
+        }
+
         // Restore historical threats so the dashboard shows them on restart.
         match storage.load_threats() {
             Ok(threats) if !threats.is_empty() => {
@@ -321,8 +337,14 @@ impl Engine {
             info!("Running auto-response for {} threat(s)", all_threats.len());
             self.auto_respond(&mut all_threats).await;
 
-            // Persist the updated block list to disk so it survives across runs.
+            // Persist the updated block list and strike history to disk.
             self.persist_block_list().await;
+            {
+                let state = self.state.read().await;
+                if let Err(e) = self.storage.save_strike_history(&state.strike_history) {
+                    warn!(error = %e, "Failed to persist strike history after scan");
+                }
+            }
         }
 
         // Update seen-threats with the new (non-suppressed) threats.
@@ -537,6 +559,20 @@ impl Engine {
                     if let Err(e) = self.storage.save_seen_threats(&seen) {
                         warn!(error = %e, "Failed to persist seen threats during housekeeping");
                     }
+                    // Prune and persist strike history
+                    {
+                        let mut state = self.state.write().await;
+                        let window = Scheduler::parse_duration(&self.config.response.repeat_offender_window)
+                            .map(|d| chrono::Duration::from_std(d).unwrap_or(chrono::Duration::days(30)))
+                            .unwrap_or(chrono::Duration::days(30));
+                        let pruned = state.prune_strikes(window, self.config.response.max_strike_records);
+                        if pruned > 0 {
+                            info!(pruned, "Housekeeping: pruned old strike records");
+                        }
+                        if let Err(e) = self.storage.save_strike_history(&state.strike_history) {
+                            warn!(error = %e, "Failed to persist strike history during housekeeping");
+                        }
+                    }
                     info!("Housekeeping cycle complete");
                 }
                 maybe_threat = rx.recv() => {
@@ -607,11 +643,17 @@ impl Engine {
             state.daemon_running = false;
         }
 
-        // Persist seen-threats and block list on shutdown.
+        // Persist seen-threats, block list, and strike history on shutdown.
         if let Err(e) = self.storage.save_seen_threats(&seen) {
             warn!(error = %e, "Failed to persist seen threats on shutdown");
         }
         self.persist_block_list().await;
+        {
+            let state = self.state.read().await;
+            if let Err(e) = self.storage.save_strike_history(&state.strike_history) {
+                warn!(error = %e, "Failed to persist strike history on shutdown");
+            }
+        }
 
         info!("Daemon shutdown complete");
         Ok(())
@@ -665,10 +707,13 @@ impl Engine {
             warn!(error = %e, "Alert delivery failed");
         }
 
-        // Store the threat in shared state.
+        // Store the threat in shared state and persist strike history.
         {
             let mut state = self.state.write().await;
             state.add_threat(threat);
+            if let Err(e) = self.storage.save_strike_history(&state.strike_history) {
+                warn!(error = %e, "Failed to persist strike history after auto-respond");
+            }
         }
     }
 

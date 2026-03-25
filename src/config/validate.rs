@@ -295,6 +295,26 @@ fn validate_response(config: &AegisConfig, result: &mut ValidationResult) {
         }
     }
 
+    // Repeat offender validation
+    if config.response.repeat_offender_threshold > 0 {
+        if Scheduler::parse_duration(&config.response.repeat_offender_window).is_err() {
+            result.errors.push(format!(
+                "[response] Invalid repeat_offender_window: '{}'. Use format like '30d', '7d'",
+                config.response.repeat_offender_window
+            ));
+        }
+    } else {
+        result.warnings.push(
+            "[response] repeat_offender_threshold is 0, auto-escalation to permanent ban is disabled"
+                .to_string(),
+        );
+    }
+    if config.response.max_strike_records == 0 {
+        result.warnings.push(
+            "[response] max_strike_records is 0, strike history will not be retained".to_string(),
+        );
+    }
+
     // GeoIP validation
     if config.response.geoip.enabled {
         let db_path = resolve_path(&config.response.geoip.database_path);
@@ -534,6 +554,29 @@ mod tests {
         config.response.whitelist.push("not-a-cidr".to_string());
         let result = validate_config(&config);
         assert!(result.errors.iter().any(|e| e.contains("whitelist CIDR")));
+    }
+
+    #[test]
+    fn test_invalid_repeat_offender_window() {
+        let mut config = AegisConfig::default();
+        config.response.repeat_offender_threshold = 3;
+        config.response.repeat_offender_window = "invalid".to_string();
+        let result = validate_config(&config);
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("repeat_offender_window")));
+    }
+
+    #[test]
+    fn test_zero_threshold_warning() {
+        let mut config = AegisConfig::default();
+        config.response.repeat_offender_threshold = 0;
+        let result = validate_config(&config);
+        assert!(result
+            .warnings
+            .iter()
+            .any(|w| w.contains("auto-escalation")));
     }
 
     #[test]

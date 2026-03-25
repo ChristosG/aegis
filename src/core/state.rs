@@ -143,6 +143,20 @@ impl IpLookup {
     }
 }
 
+/// Record of an IP's auto-block history for repeat offender escalation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrikeRecord {
+    /// Timestamps of each auto-block event.
+    pub strikes: Vec<DateTime<Utc>>,
+    /// Reason from the most recent block.
+    pub last_reason: String,
+    /// Whether this IP has been permanently banned via escalation.
+    pub escalated: bool,
+}
+
+/// Per-IP strike history for repeat offender tracking.
+pub type StrikeHistory = HashMap<IpAddr, StrikeRecord>;
+
 /// Scan statistics for tracking activity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanStats {
@@ -210,6 +224,9 @@ pub struct AppState {
     pub threat_intel: Option<IpLookup>,
     /// Scan statistics.
     pub stats: ScanStats,
+    /// Per-IP strike history for repeat offender auto-escalation.
+    #[serde(default)]
+    pub strike_history: StrikeHistory,
     /// Set of modules that have been run.
     pub modules_run: HashSet<String>,
     /// Whether the engine is currently running in daemon mode.
@@ -228,6 +245,7 @@ impl Default for AppState {
             baseline: None,
             threat_intel: None,
             stats: ScanStats::default(),
+            strike_history: HashMap::new(),
             modules_run: HashSet::new(),
             daemon_running: false,
             posture: SecurityPosture::Secure,
@@ -251,6 +269,7 @@ impl AppState {
             baseline: None,
             threat_intel: None,
             stats: ScanStats::default(),
+            strike_history: HashMap::new(),
             modules_run: HashSet::new(),
             daemon_running: false,
             posture: SecurityPosture::Secure,
@@ -398,6 +417,89 @@ impl AppState {
     /// Set the threat intelligence lookup table.
     pub fn set_threat_intel(&mut self, lookup: IpLookup) {
         self.threat_intel = Some(lookup);
+    }
+
+    // -------------------------------------------------------------------
+    // Strike history (repeat offender tracking)
+    // -------------------------------------------------------------------
+
+    /// Record a new strike for an IP, pruning timestamps outside the window.
+    /// Returns the number of strikes within the window after recording.
+    pub fn record_strike(&mut self, ip: IpAddr, reason: &str, window: chrono::Duration) -> usize {
+        let now = Utc::now();
+        let cutoff = now - window;
+        let record = self
+            .strike_history
+            .entry(ip)
+            .or_insert_with(|| StrikeRecord {
+                strikes: Vec::new(),
+                last_reason: String::new(),
+                escalated: false,
+            });
+        // Prune old timestamps outside the window.
+        record.strikes.retain(|ts| *ts >= cutoff);
+        record.strikes.push(now);
+        record.last_reason = reason.to_string();
+        record.strikes.len()
+    }
+
+    /// Count strikes for an IP within the given window (read-only).
+    pub fn strike_count(&self, ip: &IpAddr, window: chrono::Duration) -> usize {
+        let cutoff = Utc::now() - window;
+        self.strike_history
+            .get(ip)
+            .map(|r| r.strikes.iter().filter(|ts| **ts >= cutoff).count())
+            .unwrap_or(0)
+    }
+
+    /// Check whether an IP has been permanently escalated.
+    pub fn is_escalated(&self, ip: &IpAddr) -> bool {
+        self.strike_history.get(ip).is_some_and(|r| r.escalated)
+    }
+
+    /// Mark an IP as permanently escalated.
+    pub fn mark_escalated(&mut self, ip: &IpAddr) {
+        if let Some(record) = self.strike_history.get_mut(ip) {
+            record.escalated = true;
+        }
+    }
+
+    /// Prune old strike records outside the window and cap total records.
+    /// Escalated entries are always preserved. Returns the number of entries removed.
+    pub fn prune_strikes(&mut self, window: chrono::Duration, max_records: usize) -> usize {
+        let cutoff = Utc::now() - window;
+        let before = self.strike_history.len();
+
+        // Remove non-escalated entries with no strikes in the window.
+        self.strike_history.retain(|_, record| {
+            if record.escalated {
+                return true;
+            }
+            record.strikes.retain(|ts| *ts >= cutoff);
+            !record.strikes.is_empty()
+        });
+
+        // Cap total records if over limit (remove oldest non-escalated first).
+        if self.strike_history.len() > max_records {
+            // Collect non-escalated IPs sorted by oldest last-strike.
+            let mut candidates: Vec<(IpAddr, DateTime<Utc>)> = self
+                .strike_history
+                .iter()
+                .filter(|(_, r)| !r.escalated)
+                .map(|(ip, r)| {
+                    let oldest = r.strikes.iter().copied().max().unwrap_or(cutoff);
+                    (*ip, oldest)
+                })
+                .collect();
+            candidates.sort_by_key(|(_, ts)| *ts);
+
+            let to_remove = self.strike_history.len() - max_records;
+            for (ip, _) in candidates.into_iter().take(to_remove) {
+                self.strike_history.remove(&ip);
+            }
+        }
+
+        before - self.strike_history.len()
     }
 }
 
@@ -551,5 +653,108 @@ mod tests {
         // Verify we can clone the Arc
         let ss2 = ss.clone();
         assert!(Arc::ptr_eq(&ss, &ss2));
+    }
+
+    // -------------------------------------------------------------------
+    // Strike history tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_record_strike_increments() {
+        let mut state = AppState::with_config(test_config());
+        let ip: IpAddr = "10.0.0.99".parse().unwrap();
+        let window = chrono::Duration::days(30);
+
+        assert_eq!(state.record_strike(ip, "ddos", window), 1);
+        assert_eq!(state.record_strike(ip, "scan", window), 2);
+        assert_eq!(state.record_strike(ip, "brute", window), 3);
+        assert_eq!(state.strike_count(&ip, window), 3);
+    }
+
+    #[test]
+    fn test_strike_window_filtering() {
+        let mut state = AppState::with_config(test_config());
+        let ip: IpAddr = "10.0.0.100".parse().unwrap();
+        let window = chrono::Duration::days(30);
+
+        // Insert an old strike manually (outside window).
+        state.strike_history.insert(
+            ip,
+            StrikeRecord {
+                strikes: vec![Utc::now() - chrono::Duration::days(60)],
+                last_reason: "old".into(),
+                escalated: false,
+            },
+        );
+
+        // record_strike prunes old ones and adds new.
+        let count = state.record_strike(ip, "new", window);
+        assert_eq!(count, 1); // old strike was outside window
+
+        // strike_count should also only see the recent one.
+        assert_eq!(state.strike_count(&ip, window), 1);
+    }
+
+    #[test]
+    fn test_escalation_persists() {
+        let mut state = AppState::with_config(test_config());
+        let ip: IpAddr = "10.0.0.101".parse().unwrap();
+        let window = chrono::Duration::days(30);
+
+        state.record_strike(ip, "test", window);
+        assert!(!state.is_escalated(&ip));
+
+        state.mark_escalated(&ip);
+        assert!(state.is_escalated(&ip));
+    }
+
+    #[test]
+    fn test_prune_removes_old_preserves_escalated() {
+        let mut state = AppState::with_config(test_config());
+        let window = chrono::Duration::days(30);
+
+        // IP with old-only strikes (should be pruned).
+        let old_ip: IpAddr = "10.0.0.200".parse().unwrap();
+        state.strike_history.insert(
+            old_ip,
+            StrikeRecord {
+                strikes: vec![Utc::now() - chrono::Duration::days(60)],
+                last_reason: "old".into(),
+                escalated: false,
+            },
+        );
+
+        // IP that is escalated (should be kept even with old strikes).
+        let esc_ip: IpAddr = "10.0.0.201".parse().unwrap();
+        state.strike_history.insert(
+            esc_ip,
+            StrikeRecord {
+                strikes: vec![Utc::now() - chrono::Duration::days(60)],
+                last_reason: "perma".into(),
+                escalated: true,
+            },
+        );
+
+        let removed = state.prune_strikes(window, 10_000);
+        assert_eq!(removed, 1);
+        assert!(!state.strike_history.contains_key(&old_ip));
+        assert!(state.strike_history.contains_key(&esc_ip));
+    }
+
+    #[test]
+    fn test_prune_caps_size() {
+        let mut state = AppState::with_config(test_config());
+        let window = chrono::Duration::days(30);
+
+        // Insert 100 recent strike records.
+        for i in 0..100u8 {
+            let ip: IpAddr = format!("10.1.0.{}", i).parse().unwrap();
+            state.record_strike(ip, "test", window);
+        }
+        assert_eq!(state.strike_history.len(), 100);
+
+        // Cap at 50.
+        state.prune_strikes(window, 50);
+        assert!(state.strike_history.len() <= 50);
     }
 }

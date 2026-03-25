@@ -338,6 +338,7 @@ pub fn render_threats_page(state: &AppState, token: &str) -> String {
 }
 
 pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> String {
+    let threshold = state.config.response.repeat_offender_threshold;
     let block_rows: String = state
         .blocked_ips
         .values()
@@ -356,12 +357,26 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
             };
             let expired_tag = if expired { " (expired)" } else { "" };
             let auto_str = if b.auto { "Yes" } else { "No" };
+            let strike_info = state.strike_history.get(&b.ip);
+            let strikes = strike_info.map_or(0, |r| r.strikes.len());
+            let escalated = strike_info.is_some_and(|r| r.escalated);
+            let strikes_str = if escalated {
+                format!(
+                    r#"<span style="color:#f85149;font-weight:600">{} (PERMA)</span>"#,
+                    strikes
+                )
+            } else if threshold > 0 {
+                format!("{}/{}", strikes, threshold)
+            } else {
+                format!("{}", strikes)
+            };
             format!(
                 r#"<tr{row_class}>
                     <td>{ip}</td>
                     <td>{reason}</td>
                     <td data-ts="{blocked_at_iso}">{blocked_at}</td>
                     <td{expires_data_ts}>{expires}{expired_tag}</td>
+                    <td>{strikes_str}</td>
                     <td>{auto_str}</td>
                     <td><button class="btn-sm" onclick="fwUnblock('{ip}')">Unblock</button></td>
                 </tr>"#,
@@ -373,6 +388,7 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
                 expires_data_ts = expires_data_ts,
                 expires = expires_str,
                 expired_tag = expired_tag,
+                strikes_str = strikes_str,
                 auto_str = auto_str,
             )
         })
@@ -401,7 +417,7 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
             <div class="fw-form">
                 <input type="text" id="block-ip-input" class="fw-input" placeholder="IP address" />
                 <input type="text" id="block-reason-input" class="fw-input fw-input-wide" placeholder="Reason (optional)" />
-                <input type="text" id="block-duration-input" class="fw-input" placeholder="Duration (default: 24h)" />
+                <input type="text" id="block-duration-input" class="fw-input" placeholder="Duration (24h, 7d, or forever)" />
                 <button onclick="fwBlockIp()">Block</button>
             </div>
         </div>
@@ -414,7 +430,8 @@ pub fn render_firewall_page(state: &AppState, token: &str, fi_enabled: bool) -> 
                         <th class="sortable" onclick="sortTable('blocks-table',1)">Reason</th>
                         <th class="sortable" onclick="sortTable('blocks-table',2)">Blocked At</th>
                         <th class="sortable" onclick="sortTable('blocks-table',3)">Expires</th>
-                        <th class="sortable" onclick="sortTable('blocks-table',4)">Auto</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',4)">Strikes</th>
+                        <th class="sortable" onclick="sortTable('blocks-table',5)">Auto</th>
                         <th>Actions</th>
                     </tr>
                 </thead>

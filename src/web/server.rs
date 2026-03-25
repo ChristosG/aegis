@@ -96,6 +96,7 @@ pub async fn start_server(
         .route("/api/blocks", get(routes::blocks::api_blocks))
         .route("/api/block", post(routes::blocks::api_block))
         .route("/api/unblock", post(routes::blocks::api_unblock))
+        .route("/api/strikes", get(routes::blocks::api_strikes))
         .route("/api/whitelist", get(routes::whitelist::api_whitelist_list))
         .route("/api/whitelist", post(routes::whitelist::api_whitelist_add))
         .route(

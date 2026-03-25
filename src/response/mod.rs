@@ -549,12 +549,41 @@ impl ResponseEngine {
             return Err(e);
         }
 
-        // Compute expiry time.
-        let expires_at = Some(
-            Utc::now()
-                + chrono::Duration::from_std(self.block_duration)
-                    .unwrap_or_else(|_| chrono::Duration::hours(24)),
-        );
+        // Repeat offender escalation: record strike and check threshold.
+        let threshold = self.config.repeat_offender_threshold;
+        let expires_at = if threshold > 0 {
+            let window = Scheduler::parse_duration(&self.config.repeat_offender_window)
+                .map(|d| chrono::Duration::from_std(d).unwrap_or(chrono::Duration::days(30)))
+                .unwrap_or(chrono::Duration::days(30));
+
+            let strike_count = state.record_strike(validated, reason, window);
+
+            if state.is_escalated(&validated) || strike_count >= threshold as usize {
+                if !state.is_escalated(&validated) {
+                    state.mark_escalated(&validated);
+                }
+                info!(
+                    ip = %validated,
+                    strikes = strike_count,
+                    threshold = threshold,
+                    "Repeat offender escalated to permanent ban"
+                );
+                None // permanent
+            } else {
+                Some(
+                    Utc::now()
+                        + chrono::Duration::from_std(self.block_duration)
+                            .unwrap_or_else(|_| chrono::Duration::hours(24)),
+                )
+            }
+        } else {
+            // Escalation disabled — use default duration.
+            Some(
+                Utc::now()
+                    + chrono::Duration::from_std(self.block_duration)
+                        .unwrap_or_else(|_| chrono::Duration::hours(24)),
+            )
+        };
 
         let entry = BlockEntry {
             ip: validated,

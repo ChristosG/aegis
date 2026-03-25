@@ -61,6 +61,18 @@ fn default_ddos_high_traffic_threshold() -> u32 {
     2000
 }
 
+fn default_repeat_offender_threshold() -> u32 {
+    3
+}
+
+fn default_repeat_offender_window() -> String {
+    "30d".into()
+}
+
+fn default_max_strike_records() -> usize {
+    10_000
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -425,6 +437,15 @@ pub struct ResponseConfig {
     pub overrides: HashMap<String, String>,
     /// GeoIP-based blocking settings.
     pub geoip: GeoipConfig,
+    /// Number of auto-blocks within the window before permanent ban (0 = disabled).
+    #[serde(default = "default_repeat_offender_threshold")]
+    pub repeat_offender_threshold: u32,
+    /// Time window for counting repeat offences (e.g. "30d").
+    #[serde(default = "default_repeat_offender_window")]
+    pub repeat_offender_window: String,
+    /// Maximum number of strike records to keep in memory.
+    #[serde(default = "default_max_strike_records")]
+    pub max_strike_records: usize,
 }
 
 impl Default for ResponseConfig {
@@ -462,6 +483,9 @@ impl Default for ResponseConfig {
             ],
             overrides,
             geoip: GeoipConfig::default(),
+            repeat_offender_threshold: default_repeat_offender_threshold(),
+            repeat_offender_window: default_repeat_offender_window(),
+            max_strike_records: default_max_strike_records(),
         }
     }
 }

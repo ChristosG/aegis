@@ -6,10 +6,50 @@ use crate::web::server::AppContext;
 
 pub async fn api_blocks(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
     let state = ctx.state.read().await;
-    let blocks: Vec<&BlockEntry> = state.blocked_ips.values().collect();
+    let threshold = state.config.response.repeat_offender_threshold;
+    let blocks: Vec<serde_json::Value> = state
+        .blocked_ips
+        .values()
+        .map(|b| {
+            let strike_info = state.strike_history.get(&b.ip);
+            let strikes = strike_info.map_or(0, |r| r.strikes.len());
+            let escalated = strike_info.is_some_and(|r| r.escalated);
+            serde_json::json!({
+                "ip": b.ip,
+                "reason": b.reason,
+                "blocked_at": b.blocked_at,
+                "expires_at": b.expires_at,
+                "auto": b.auto,
+                "strikes": strikes,
+                "escalated": escalated,
+                "threshold": threshold,
+            })
+        })
+        .collect();
     Json(serde_json::json!({
         "blocked_ips": blocks,
         "count": blocks.len(),
+    }))
+}
+
+pub async fn api_strikes(State(ctx): State<AppContext>) -> Json<serde_json::Value> {
+    let state = ctx.state.read().await;
+    let records: Vec<serde_json::Value> = state
+        .strike_history
+        .iter()
+        .map(|(ip, record)| {
+            serde_json::json!({
+                "ip": ip.to_string(),
+                "strikes": record.strikes.len(),
+                "last_reason": record.last_reason,
+                "escalated": record.escalated,
+                "timestamps": record.strikes,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "strike_records": records,
+        "count": records.len(),
     }))
 }
 
@@ -31,18 +71,23 @@ pub async fn api_block(
         )
     })?;
     let duration_str = req.duration.as_deref().unwrap_or("24h");
-    let duration =
-        crate::core::scheduler::Scheduler::parse_duration(duration_str).map_err(|_| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"status": "error", "message": "Invalid duration format"})),
-            )
-        })?;
-
-    let expires_at = Some(
-        chrono::Utc::now()
-            + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::hours(24)),
-    );
+    let expires_at = if duration_str == "forever" {
+        None
+    } else {
+        let duration =
+            crate::core::scheduler::Scheduler::parse_duration(duration_str).map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(
+                        serde_json::json!({"status": "error", "message": "Invalid duration format"}),
+                    ),
+                )
+            })?;
+        Some(
+            chrono::Utc::now()
+                + chrono::Duration::from_std(duration).unwrap_or(chrono::Duration::hours(24)),
+        )
+    };
 
     let entry = BlockEntry {
         ip,
