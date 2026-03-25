@@ -1,8 +1,8 @@
 Package: aegis
-Version: 2.4.0-1
+Version: 2.5.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 9689
+Installed-Size: 9736
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis-full
@@ -10,21 +10,21 @@ Replaces: aegis-full
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis/aegis_2.4.0-1_amd64.deb
-Size: 3399300
-SHA256: cb3def9dc2d555a848e53ba7b57096a32711ba58a16194d4540b04f211bf52ea
-SHA1: cd456d182e7f8c998e309accd3a99940144f128c
-MD5sum: fc050cf23a9afba39063f700655744f0
+Filename: pool/main/a/aegis/aegis_2.5.0-1_amd64.deb
+Size: 3412416
+SHA256: b05e4f2b006358a36d72a853dc80c5e39d629b20d6ac0ff2ecc9cd99636ce408
+SHA1: 6c879a8bed1db89f1713b39a8d448a866b794fb9
+MD5sum: 2b92b0bcb0dbc992afe5991c2827cb7e
 Description: Linux Security Monitoring & Response Tool
  Aegis monitors your Linux server for network attacks, malware, brute-force
  attempts, file tampering, web exploits, and known-malicious IPs, then
  automatically blocks them. Single static binary.
 
 Package: aegis-full
-Version: 2.4.0-1
+Version: 2.5.0-1
 Architecture: amd64
 Maintainer: ChristosG
-Installed-Size: 11681
+Installed-Size: 11750
 Depends: iptables | nftables, systemd
 Recommends: fail2ban
 Conflicts: aegis
@@ -32,11 +32,11 @@ Replaces: aegis
 Provides: aegis
 Priority: optional
 Section: admin
-Filename: pool/main/a/aegis-full/aegis-full_2.4.0-1_amd64.deb
-Size: 3897456
-SHA256: 305b1f8c52fbbc2877b497a7534a35ea4af9532513c5350b2d367bd8c0d3d840
-SHA1: 17073b226cd834ed2a87dc2506ceaa406e19adb1
-MD5sum: c53f5c2b2e87743a367368429cc68235
+Filename: pool/main/a/aegis-full/aegis-full_2.5.0-1_amd64.deb
+Size: 3910868
+SHA256: c1391a59788b0bac42692a17f218719b6a80deecbb19115cc419f7e97a88f8c1
+SHA1: 2cfe981d5ae79e73f39d5715a3b8107240ba802b
+MD5sum: e66cc81b7d2e6f592bd006183951211e
 Description: Linux Security Monitoring & Response Tool
  Aegis with web dashboard. Monitors your Linux server for network attacks,
  malware, brute-force attempts, file tampering, web exploits, and

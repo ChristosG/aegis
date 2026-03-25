@@ -1,28 +1,28 @@
 Origin: Aegis
 Label: Aegis
 Codename: stable
-Date: Sat, 21 Mar 2026 22:12:14 UTC
+Date: Wed, 25 Mar 2026 01:26:50 UTC
 Architectures: amd64 arm64
 Components: main
 Description: Aegis Linux Security Monitoring
 MD5Sum:
- 4a905b1cc106576af5435db79f1458a7 1458 main/binary-amd64/Packages
- 390aaf073563c0f40abdb383ff9755cb 681 main/binary-amd64/Packages.gz
+ 125d8bed982fe5514b31b70522ed52eb 1458 main/binary-amd64/Packages
+ a98ba198193238d3a5a4205e71389018 681 main/binary-amd64/Packages.gz
  b5286484d798333c0b73d5d804793242 108 main/binary-amd64/Release
- 57b0f674d2843f9bf329adedbd222c9e 1458 main/binary-arm64/Packages
- 88a4bf117ce27f1416608f419a7eaa6e 679 main/binary-arm64/Packages.gz
+ f42e5cb03c48056900f29fb5514d05d8 1458 main/binary-arm64/Packages
+ 7c90ecb1215daa890ccc7c33f0f6caf1 680 main/binary-arm64/Packages.gz
  5b293232f7cff94481a676ab015f94c8 108 main/binary-arm64/Release
 SHA1:
- 59f13297e8b953eb1358f1c4a73ea175c3b03e9d 1458 main/binary-amd64/Packages
- c036531e43471167855a7a41ad50f484626bbdd9 681 main/binary-amd64/Packages.gz
+ d01ad6520699ff609e089ba414e35ca078052907 1458 main/binary-amd64/Packages
+ 9317da6927e7d7b6ad7a1472882fecb5fb5f94d6 681 main/binary-amd64/Packages.gz
  fcd572c70f7646d6a7608ea19254b4d8536e07c3 108 main/binary-amd64/Release
- b86bbc3de6f238285a94251080223dfcf4e8dded 1458 main/binary-arm64/Packages
- 70b00bb0b6440fcf9c59d8ab464bb6da263647f3 679 main/binary-arm64/Packages.gz
+ 343a2aba24b7278d6f672bd2fbe2030f2ca9a258 1458 main/binary-arm64/Packages
+ 7256f675eda9a248f24ba087a474ab0f1f762884 680 main/binary-arm64/Packages.gz
  dd399189261790b2ae3ff06fb671ee7374454085 108 main/binary-arm64/Release
 SHA256:
- ef09bf280f39c618ee77ad8b33a56e5c92da8df589c2e4427235536dd4c79071 1458 main/binary-amd64/Packages
- 9a12f53973b1b3720b1aada9a256de15c9975e0dd2ed93e70158bb3f76f8be89 681 main/binary-amd64/Packages.gz
+ 3e52ccbacbf1449dd3f0f28ce8248f2cf8597a3dfbe84d21578c0cdf3b8aca05 1458 main/binary-amd64/Packages
+ aad0d4713d2dccafd21f389315cb4e2164f3a8e76304d0e6e62014eca64fce8a 681 main/binary-amd64/Packages.gz
  4976b97e66d114b004c8a7a3c5e53eed2d4a81986d6def337177fc287466bd9e 108 main/binary-amd64/Release
- 928de586ce97c30d62b8ab306b6348557dae5b5ff472c682a6a2d7605cb713c9 1458 main/binary-arm64/Packages
- a329ae3996ced9695f292986f207be3661ea83ed509c8929427d5aa1c64f0938 679 main/binary-arm64/Packages.gz
+ ae9cac225de97f1f3c304fed1b0d8eef1a2ecafbe25cba0cbfc9ea771ceeaf74 1458 main/binary-arm64/Packages
+ ce05f273fb157d8297e5a1db3def86dfff91662e6621b8d8844f7a7d0c0f2984 680 main/binary-arm64/Packages.gz
  58fc6a41380227433cd0d3d614eedb7867a07763c528255713c9d6aaa688e644 108 main/binary-arm64/Release
