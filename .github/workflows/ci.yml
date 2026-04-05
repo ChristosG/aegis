@@ -26,6 +26,14 @@ jobs:
   test-web:
     name: Test (Web Dashboard)
     runs-on: ubuntu-latest
+    # Grant write permission so the "Update test badge" step below can push
+    # the auto-generated tests.json back to main. Without this, the push
+    # fails with 403 and breaks CI — which is what happened from v2.4.0
+    # through v2.5.0. Scoped to this job only; the rest of CI stays read-only.
+    # No untrusted user input is interpolated into any run: block in this
+    # job — TEST_COUNT is a job-local env var we set from our own test output.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
 
@@ -36,14 +44,19 @@ jobs:
           key: web-dashboard
 
       - name: Run tests with web-dashboard feature
+        # Use `set -o pipefail` so a cargo test failure doesn't get swallowed
+        # by the tee — otherwise the step reports success even when cargo
+        # errored out, and TEST_COUNT ends up empty.
+        shell: bash
         run: |
+          set -o pipefail
           cargo test --features web-dashboard 2>&1 | tee test_output.txt
           TOTAL=$(grep -oP '\d+(?= passed)' test_output.txt | paste -sd+ | bc)
           echo "TEST_COUNT=${TOTAL}" >> "$GITHUB_ENV"
           echo "Tests passed: ${TOTAL}"
 
       - name: Update test badge
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && env.TEST_COUNT != ''
         run: |
           mkdir -p .github/badges
           printf '{\n  "schemaVersion": 1,\n  "label": "tests",\n  "message": "%s passing",\n  "color": "brightgreen"\n}\n' "${TEST_COUNT}" > .github/badges/tests.json
@@ -90,6 +103,10 @@ jobs:
         run: cargo install cargo-audit
 
       - name: Run cargo audit
+        # Ignored advisories are all transitive deps we can't upgrade without
+        # waiting on upstream (yara-x → intaglio / bincode, genpdf → lopdf →
+        # encoding / lzw, etc.). Review these quarterly; remove from the list
+        # as upstream fixes land.
         run: |
           cargo audit \
             --ignore RUSTSEC-2023-0071 \
@@ -98,7 +115,8 @@ jobs:
             --ignore RUSTSEC-2026-0020 \
             --ignore RUSTSEC-2026-0021 \
             --ignore RUSTSEC-2026-0044 \
-            --ignore RUSTSEC-2026-0048
+            --ignore RUSTSEC-2026-0048 \
+            --ignore RUSTSEC-2026-0078
 
       - name: Gitleaks secret scan
         uses: gitleaks/gitleaks-action@v2

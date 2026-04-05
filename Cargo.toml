@@ -1,6 +1,6 @@
 [package]
 name = "aegis"
-version = "v2.6.0"
+version = "2.6.0"
 edition = "2021"
 description = "Linux Security Monitoring & Response Tool"
 license = "MIT"
