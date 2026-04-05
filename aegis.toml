@@ -126,7 +126,7 @@ default_block_duration = "24h"
 max_firewall_rules = 10000
 # Firewall backend: iptables, nftables, ufw
 firewall_backend = "iptables"
-# Whitelist - never block these
+# Whitelist - never block these (user-curated; fully blocks any auto-response)
 whitelist = [
     "127.0.0.0/8",
     "::1/128",
@@ -134,6 +134,42 @@ whitelist = [
     "172.16.0.0/12",
     "192.168.0.0/16",
 ]
+
+# --------------------------------------------------------------------------
+# v2.6.0 — Bucket A safety pin
+# --------------------------------------------------------------------------
+# CIDR ranges for well-known infrastructure providers that Aegis must NEVER
+# auto-block. Unlike `whitelist`, these are shipped with Aegis and updated
+# by the project on each release. Events fired against these IPs are still
+# logged at Low severity (with a safety_pin_reason detail) for admin
+# visibility — but no firewall rule is installed.
+#
+# Leave this key commented out to use the hardcoded default list covering
+# Anthropic, Cloudflare, GitHub, AWS CloudFront, Google, and Fastly.
+# Set to [] to disable the safety pin entirely (NOT RECOMMENDED — you will
+# lose protection against Aegis accidentally firewalling legitimate cloud
+# services that you depend on).
+# See: docs/specs/2026-04-05-aegis-v2-design.md §2
+# well_known_destinations = []
+
+# --------------------------------------------------------------------------
+# v2.6.0 — Bucket B zero-tolerance
+# --------------------------------------------------------------------------
+# Threat type config keys that trigger a permanent first-offense ban,
+# bypassing the strike counter. Conservative default; do NOT add web_ddos,
+# scanner_probe, or brute_force unless you're sure your thresholds won't
+# false-positive on legitimate traffic spikes.
+# See: docs/specs/2026-04-05-aegis-v2-design.md §3
+# zero_tolerance_threats = ["path_traversal", "sqli_attempt", "reverse_shell"]
+
+# --------------------------------------------------------------------------
+# v2.6.0 — Bucket D drift detection
+# --------------------------------------------------------------------------
+# Enable periodic reconciliation between block_list.json and the AEGIS_BLOCK
+# iptables chain. Defaults to warn-only mode; flip auto_reconcile_firewall
+# to true only after verifying drift reports look correct for your system.
+# auto_reconcile_firewall = false
+# reconcile_interval_minutes = 15
 
 # Severity -> default action: info=log, low=log, medium=alert, high=block, critical=block+kill
 # Per-threat-type overrides:
@@ -144,7 +180,12 @@ scanner_probe = "block"
 syn_flood = "block"
 brute_force = "block"
 port_scan = "block"
-c2_beacon = "block"
+# TEMPORARY downgrade to "alert" until v2.6.0's time-series beacon detector
+# (Bucket E) has soaked in production. The legacy count-based detector has
+# too many false positives against legitimate HTTP/2/gRPC API clients.
+# Flip back to "block" after verifying the new detector's precision.
+# See: docs/specs/2026-04-05-aegis-v2-design.md §2.5 and §6
+c2_beacon = "alert"
 web_ddos = "block"
 sqli_attempt = "block"
 path_traversal = "block"
