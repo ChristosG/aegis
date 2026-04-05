@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use ipnet::IpNet;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::schema::ResponseConfig;
 use crate::core::scheduler::Scheduler;
@@ -28,6 +28,16 @@ trait FirewallBackend: Send + Sync {
     fn block_ip(&self, ip: &IpAddr) -> Result<()>;
     /// Remove the DROP rule for the given IP.
     fn unblock_ip(&self, ip: &IpAddr) -> Result<()>;
+    /// Enumerate all IPs currently blocked by this backend's managed chain.
+    /// Used by the drift-detection reconciliation task (v2.6.0 Bucket D) to
+    /// diff against `AppState.blocked_ips`.
+    ///
+    /// Returns an empty Vec on failure (e.g. iptables not available) rather
+    /// than an error, so drift detection degrades gracefully on restricted
+    /// test environments. Default impl returns empty for backward compat.
+    fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+        Ok(Vec::new())
+    }
 }
 
 // -- iptables ---------------------------------------------------------------
@@ -113,6 +123,38 @@ impl FirewallBackend for IptablesBackend {
             anyhow::bail!("iptables unblock failed for {}: {}", ip, stderr);
         }
         Ok(())
+    }
+
+    fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+        // `iptables -S AEGIS_BLOCK -n` produces one line per rule:
+        //   -N AEGIS_BLOCK
+        //   -A AEGIS_BLOCK -s 1.2.3.4/32 -j DROP
+        //   -A AEGIS_BLOCK -s 2001:db8::/64 -j DROP
+        // We only care about -A lines with a -s source clause.
+        let output = match Command::new("iptables")
+            .args(["-S", "AEGIS_BLOCK", "-n"])
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                // iptables may not be installed, or the chain may not exist
+                // yet (first daemon start). Treat as "no rules" rather than error.
+                debug!(error = %e, "iptables -S AEGIS_BLOCK failed; returning empty list");
+                return Ok(Vec::new());
+            }
+        };
+
+        if !output.status.success() {
+            debug!(
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "iptables -S AEGIS_BLOCK returned non-zero; returning empty list"
+            );
+            return Ok(Vec::new());
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let ips = parse_iptables_list_output(&text);
+        Ok(ips)
     }
 }
 
@@ -230,6 +272,30 @@ impl FirewallBackend for NftablesBackend {
         warn!(ip = %ip, "Could not find nft rule to delete");
         Ok(())
     }
+
+    fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+        // `nft list chain inet aegis input` produces lines like:
+        //   ip saddr 1.2.3.4 drop
+        //   ip6 saddr 2001:db8::1 drop
+        let output = match Command::new("nft")
+            .args(["list", "chain", "inet", "aegis", "input"])
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                debug!(error = %e, "nft list chain failed; returning empty list");
+                return Ok(Vec::new());
+            }
+        };
+
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let ips = parse_nft_list_output(&text);
+        Ok(ips)
+    }
 }
 
 // -- ufw --------------------------------------------------------------------
@@ -285,6 +351,101 @@ impl FirewallBackend for UfwBackend {
         }
         Ok(())
     }
+
+    fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+        // `ufw status` produces lines like:
+        //   Anywhere                   DENY IN     1.2.3.4
+        //   Anywhere (v6)              DENY IN     2001:db8::1
+        let output = match Command::new("ufw").arg("status").output() {
+            Ok(out) => out,
+            Err(e) => {
+                debug!(error = %e, "ufw status failed; returning empty list");
+                return Ok(Vec::new());
+            }
+        };
+        if !output.status.success() {
+            return Ok(Vec::new());
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let ips = parse_ufw_status_output(&text);
+        Ok(ips)
+    }
+}
+
+// -- firewall list parsers (v2.6.0 Bucket D) --------------------------------
+//
+// Pulled out as free functions so we can unit-test them without spawning
+// subprocesses. Each parser is tolerant of format variations — unparseable
+// lines are silently skipped, which is safer than failing on unexpected
+// output and losing all drift visibility.
+
+/// Parse `iptables -S AEGIS_BLOCK -n` output into a list of IPs.
+/// Ignores the `-N` chain-create line and any malformed entries.
+fn parse_iptables_list_output(text: &str) -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.starts_with("-A AEGIS_BLOCK") {
+            continue;
+        }
+        // Find the `-s <addr>/<mask>` token.
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        for i in 0..tokens.len() {
+            if tokens[i] == "-s" {
+                if let Some(addr) = tokens.get(i + 1) {
+                    // Strip /32 or /128 if present
+                    let ip_str = addr.split('/').next().unwrap_or(addr);
+                    if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                        out.push(ip);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Parse `nft list chain inet aegis input` output into a list of IPs.
+fn parse_nft_list_output(text: &str) -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        // Look for `ip saddr <addr>` or `ip6 saddr <addr>` followed by `drop`
+        if !line.contains("saddr") || !line.contains("drop") {
+            continue;
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        for i in 0..tokens.len() {
+            if tokens[i] == "saddr" {
+                if let Some(addr) = tokens.get(i + 1) {
+                    let ip_str = addr.split('/').next().unwrap_or(addr);
+                    if let Ok(ip) = ip_str.parse::<IpAddr>() {
+                        out.push(ip);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Parse `ufw status` output into a list of denied IPs.
+fn parse_ufw_status_output(text: &str) -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if !line.contains("DENY") {
+            continue;
+        }
+        // The last whitespace-separated token is usually the source IP.
+        if let Some(last) = line.split_whitespace().last() {
+            if let Ok(ip) = last.parse::<IpAddr>() {
+                out.push(ip);
+            }
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -338,6 +499,121 @@ impl std::fmt::Display for ResponseAction {
 }
 
 // ---------------------------------------------------------------------------
+// BlockOutcome
+// ---------------------------------------------------------------------------
+
+/// Outcome of an attempted `block_ip()` call. The caller uses this to build
+/// an accurate human-readable response message and to decide whether the
+/// threat event was "handled" for purposes of the auto_responded flag.
+///
+/// Introduced in v2.6.0 Bucket A so we can distinguish "actually blocked"
+/// from "would-have-blocked-but-skipped-for-X-reason" in the threat log,
+/// fixing the ambiguity where `respond()` used to return
+/// `"Blocked IP X"` even when the IP was whitelisted or rate-limited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockOutcome {
+    /// Firewall rule installed and block entry added to state.
+    Blocked,
+    /// IP was already in state.blocked_ips; no-op.
+    AlreadyBlocked,
+    /// IP matched `response.whitelist` (user-curated allow list); skipped.
+    Whitelisted,
+    /// IP matched `response.well_known_destinations` (v2.6.0 safety pin).
+    /// The string contains a short human-readable reason, e.g.
+    /// `"Cloudflare CDN range"`.
+    SafetyPinInfrastructure(String),
+    /// Rate limit `max_blocks_per_minute` was hit; skipped.
+    RateLimited,
+    /// Zero-tolerance policy kicked in — this block is permanent
+    /// (`expires_at = None`) regardless of strike count.
+    /// Contains the threat type key that triggered it.
+    BlockedPermanentZeroTolerance(String),
+}
+
+impl BlockOutcome {
+    /// Whether this outcome represents a successfully-installed firewall rule.
+    /// Used by callers to set `auto_responded = true` on the threat event.
+    pub fn did_install_rule(&self) -> bool {
+        matches!(
+            self,
+            BlockOutcome::Blocked | BlockOutcome::BlockedPermanentZeroTolerance(_)
+        )
+    }
+
+    /// A short human-readable description of the outcome, for logs and
+    /// the threat event's `response_outcome` detail field.
+    pub fn describe(&self, ip: IpAddr) -> String {
+        match self {
+            BlockOutcome::Blocked => format!("Blocked IP {}", ip),
+            BlockOutcome::AlreadyBlocked => format!("IP {} was already blocked", ip),
+            BlockOutcome::Whitelisted => {
+                format!("IP {} is whitelisted, block skipped", ip)
+            }
+            BlockOutcome::SafetyPinInfrastructure(reason) => {
+                format!(
+                    "Safety pin: IP {} is in well_known_destinations ({}), block skipped",
+                    ip, reason
+                )
+            }
+            BlockOutcome::RateLimited => {
+                format!("Rate limit exceeded, block of {} deferred", ip)
+            }
+            BlockOutcome::BlockedPermanentZeroTolerance(threat_key) => {
+                format!(
+                    "Blocked IP {} PERMANENTLY (zero-tolerance threat: {})",
+                    ip, threat_key
+                )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReconcileReport (v2.6.0 Bucket D)
+// ---------------------------------------------------------------------------
+
+/// Report from `ResponseEngine::reconcile_firewall_state()`. Contains a diff
+/// between the persisted block list (`AppState.blocked_ips`) and the live
+/// kernel firewall state (enumerated via `FirewallBackend::list_blocked_ips`).
+///
+/// Used by the daemon housekeeping loop to surface drift, and optionally
+/// to auto-repair. See docs/specs/2026-04-05-aegis-v2-design.md §5.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReconcileReport {
+    /// How many entries are in `block_list.json` (the persisted state).
+    pub persisted_count: usize,
+    /// How many DROP rules are in the live firewall chain.
+    pub firewall_count: usize,
+    /// IPs that are persisted but NOT in the firewall chain — will be
+    /// re-added if auto_reconcile_firewall is enabled. Typical causes:
+    /// daemon restart, `apt remove aegis` followed by reinstall, manual
+    /// `iptables -F AEGIS_BLOCK`.
+    pub missing_from_firewall: Vec<IpAddr>,
+    /// IPs that are in the firewall chain but NOT persisted — will be
+    /// removed if auto_reconcile is enabled. Typical causes: stale rules
+    /// from an older Aegis version, manual `iptables -A AEGIS_BLOCK` by
+    /// the admin, or bugs in older Aegis that added rules without
+    /// persisting the block entry.
+    pub orphaned_in_firewall: Vec<IpAddr>,
+    /// Whether this reconciliation actually applied firewall changes.
+    /// False in warn-only mode (auto_reconcile_firewall = false) or when
+    /// drift exceeds the safety threshold.
+    pub auto_reconciled: bool,
+}
+
+impl ReconcileReport {
+    /// Total drift: missing + orphaned.
+    pub fn total_drift(&self) -> usize {
+        self.missing_from_firewall.len() + self.orphaned_in_firewall.len()
+    }
+
+    /// Whether the persisted state and firewall state are fully in sync.
+    pub fn is_in_sync(&self) -> bool {
+        self.total_drift() == 0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ResponseEngine
 // ---------------------------------------------------------------------------
 
@@ -348,6 +624,14 @@ pub struct ResponseEngine {
     config: ResponseConfig,
     /// Parsed whitelist CIDRs for fast containment checks.
     whitelist: Vec<IpNet>,
+    /// Parsed well_known_destinations CIDRs (v2.6.0 safety pin). Unlike
+    /// `whitelist`, these are "don't auto-block infrastructure" ranges
+    /// shipped by the project and updated on each release. See
+    /// docs/specs/2026-04-05-aegis-v2-design.md §2 for rationale.
+    well_known_destinations: Vec<IpNet>,
+    /// Set of threat type config keys that should trigger first-offense
+    /// permanent ban (v2.6.0 Bucket B). HashSet for O(1) lookup.
+    zero_tolerance_threats: HashSet<String>,
     /// Firewall backend (iptables, nftables, or ufw).
     firewall: Box<dyn FirewallBackend>,
     /// Parsed default block duration.
@@ -364,6 +648,25 @@ impl ResponseEngine {
     pub fn new(config: ResponseConfig, data_dir: PathBuf) -> Self {
         // Parse whitelist CIDRs at construction time.
         let whitelist = ip::parse_whitelist(&config.whitelist);
+
+        // Parse well_known_destinations CIDRs (v2.6.0 safety pin). Reuses the
+        // same parser as whitelist — invalid entries are logged and skipped,
+        // never fail the startup. See docs/specs/2026-04-05-aegis-v2-design.md §2.
+        let well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+        info!(
+            count = well_known_destinations.len(),
+            "Loaded well_known_destinations safety pin CIDR list"
+        );
+
+        // Build the zero-tolerance threat type set (v2.6.0 Bucket B).
+        let zero_tolerance_threats: HashSet<String> =
+            config.zero_tolerance_threats.iter().cloned().collect();
+        if !zero_tolerance_threats.is_empty() {
+            info!(
+                types = ?zero_tolerance_threats,
+                "Zero-tolerance threat types enabled (first offense = permanent ban)"
+            );
+        }
 
         // Select firewall backend based on configuration.
         let firewall: Box<dyn FirewallBackend> = match config.firewall_backend.as_str() {
@@ -404,12 +707,91 @@ impl ResponseEngine {
         Self {
             config,
             whitelist,
+            well_known_destinations,
+            zero_tolerance_threats,
             firewall,
             block_duration,
             recent_blocks: std::sync::Mutex::new(VecDeque::new()),
             data_dir,
             geoip,
         }
+    }
+
+    /// Accessor for the safety pin CIDR list (for tests and the drift
+    /// detection task).
+    pub fn well_known_destinations(&self) -> &[IpNet] {
+        &self.well_known_destinations
+    }
+
+    /// Check whether an IP falls in any of the project-shipped "don't
+    /// auto-block" CIDR ranges. This is the v2.6.0 Bucket A safety pin.
+    ///
+    /// Separate from `ip::is_whitelisted` because the semantics differ:
+    /// - `whitelist` = "never block this IP, user decision, full bypass"
+    /// - `well_known_destinations` = "don't auto-block this, but still log
+    ///   the detection so admin has visibility. User can still manually
+    ///   `aegis block` this IP if they want."
+    pub fn is_well_known_destination(&self, ip: &IpAddr) -> bool {
+        ip::is_whitelisted(ip, &self.well_known_destinations)
+    }
+
+    /// Best-effort human-readable description of why an IP is in the safety
+    /// pin list. Used to build the BlockOutcome::SafetyPinInfrastructure
+    /// variant. Only used in logging/display paths — if we can't match a
+    /// specific provider, we return "well-known infrastructure CIDR".
+    fn describe_well_known_destination(&self, ip: &IpAddr) -> String {
+        // Small lookup table mapping well-known CIDR prefixes to provider
+        // names. Not exhaustive; when the IP matches a CIDR not in this
+        // table we fall back to a generic label. Extended lookup via whois
+        // is in Bucket C's ASN module.
+        const KNOWN_PROVIDERS: &[(&str, &str)] = &[
+            ("160.79.104.0/21", "Anthropic API"),
+            ("104.16.0.0/13", "Cloudflare"),
+            ("104.24.0.0/14", "Cloudflare"),
+            ("172.64.0.0/13", "Cloudflare"),
+            ("162.158.0.0/15", "Cloudflare"),
+            ("198.41.128.0/17", "Cloudflare"),
+            ("140.82.112.0/20", "GitHub"),
+            ("185.199.108.0/22", "GitHub Pages"),
+            ("192.30.252.0/22", "GitHub"),
+            ("13.224.0.0/14", "AWS CloudFront"),
+            ("13.32.0.0/15", "AWS CloudFront"),
+            ("13.35.0.0/16", "AWS CloudFront"),
+            ("52.84.0.0/15", "AWS CloudFront"),
+            ("54.192.0.0/16", "AWS CloudFront"),
+            ("54.230.0.0/16", "AWS CloudFront"),
+            ("99.84.0.0/16", "AWS CloudFront"),
+            ("108.138.0.0/15", "AWS CloudFront"),
+            ("108.156.0.0/14", "AWS CloudFront"),
+            ("143.204.0.0/16", "AWS CloudFront"),
+            ("66.102.0.0/20", "Google"),
+            ("66.249.64.0/19", "Googlebot"),
+            ("74.125.0.0/16", "Google"),
+            ("142.250.0.0/15", "Google"),
+            ("216.58.192.0/19", "Google"),
+            ("172.217.0.0/16", "Google"),
+            ("8.8.8.0/24", "Google DNS"),
+            ("8.8.4.0/24", "Google DNS"),
+            ("151.101.0.0/16", "Fastly CDN"),
+            ("199.232.0.0/16", "Fastly CDN"),
+            ("146.75.0.0/17", "Fastly CDN"),
+            ("23.235.32.0/20", "Fastly CDN"),
+        ];
+        for (cidr_str, name) in KNOWN_PROVIDERS {
+            if let Ok(cidr) = cidr_str.parse::<IpNet>() {
+                if cidr.contains(ip) {
+                    return (*name).to_string();
+                }
+            }
+        }
+        "well-known infrastructure CIDR".to_string()
+    }
+
+    /// Whether a given threat type config key is in the zero-tolerance list
+    /// (v2.6.0 Bucket B). Used by block_ip() to decide whether to short-circuit
+    /// the strike counter and jump straight to permanent ban.
+    pub fn is_zero_tolerance(&self, threat_type_key: &str) -> bool {
+        self.zero_tolerance_threats.contains(threat_type_key)
     }
 
     /// Determine the appropriate response action for a threat event.
@@ -447,6 +829,10 @@ impl ResponseEngine {
 
     /// Execute the automated response for a threat event.
     /// Returns a description of what was done.
+    ///
+    /// v2.6.0: threads the threat type key through to `block_ip()` so the
+    /// zero-tolerance policy (Bucket B) can check it, and uses the new
+    /// `BlockOutcome` return type to build honest response messages.
     pub async fn respond(&self, event: &ThreatEvent, state: &mut AppState) -> Result<String> {
         let action = self.determine_action(event);
 
@@ -458,6 +844,9 @@ impl ResponseEngine {
             info!("{}", msg);
             return Ok(msg);
         }
+
+        // Config key for the current threat type (used for zero-tolerance check).
+        let threat_key = threat_type_to_config_key(&event.threat_type);
 
         match action {
             ResponseAction::Log => {
@@ -471,8 +860,13 @@ impl ResponseEngine {
             }
             ResponseAction::Block => {
                 if let Some(source_ip) = event.source_ip {
-                    self.block_ip(source_ip, &event.description, state)?;
-                    Ok(format!("Blocked IP {}", source_ip))
+                    let outcome = self.block_ip(
+                        source_ip,
+                        &event.description,
+                        Some(&threat_key),
+                        state,
+                    )?;
+                    Ok(outcome.describe(source_ip))
                 } else {
                     Ok(format!("Alert (no IP to block): {}", event.description))
                 }
@@ -484,8 +878,14 @@ impl ResponseEngine {
             ResponseAction::BlockAndKill => {
                 let mut msg = String::new();
                 if let Some(source_ip) = event.source_ip {
-                    self.block_ip(source_ip, &event.description, state)?;
-                    msg.push_str(&format!("Blocked IP {}; ", source_ip));
+                    let outcome = self.block_ip(
+                        source_ip,
+                        &event.description,
+                        Some(&threat_key),
+                        state,
+                    )?;
+                    msg.push_str(&outcome.describe(source_ip));
+                    msg.push_str("; ");
                 }
                 let kill_msg = self.kill_process(event)?;
                 msg.push_str(&kill_msg);
@@ -499,7 +899,38 @@ impl ResponseEngine {
     }
 
     /// Block an IP address via the configured firewall backend.
-    fn block_ip(&self, ip_addr: IpAddr, reason: &str, state: &mut AppState) -> Result<()> {
+    ///
+    /// ## v2.6.0 changes
+    ///
+    /// - **New parameter** `threat_type_key`: the config key (e.g. `"path_traversal"`,
+    ///   `"brute_force"`) of the detection that triggered this block. Used to
+    ///   check against `response.zero_tolerance_threats` (Bucket B). Can be
+    ///   `None` for manual/CLI blocks where zero-tolerance doesn't apply.
+    /// - **New return type** `Result<BlockOutcome, anyhow::Error>`: lets callers
+    ///   tell "actually blocked" apart from "skipped because whitelisted /
+    ///   rate-limited / safety-pinned". Old behavior of "return Ok(()) on any
+    ///   non-fatal skip" made the response log dishonest.
+    ///
+    /// ## Order of checks (matters for correctness)
+    ///
+    /// 1. Already blocked? → `AlreadyBlocked` (idempotent)
+    /// 2. In user whitelist? → `Whitelisted` (user decision wins)
+    /// 3. In well_known_destinations? → `SafetyPinInfrastructure` (Bucket A)
+    /// 4. Rate limit? → `RateLimited`
+    /// 5. Firewall call (may fail)
+    /// 6. Zero-tolerance or strike-based escalation → `Blocked` or
+    ///    `BlockedPermanentZeroTolerance` (Bucket B)
+    ///
+    /// Whitelist wins over safety pin so a user who has explicitly whitelisted
+    /// an IP sees consistent behavior. Safety pin wins over rate limit so
+    /// infrastructure hits don't consume the rate-limit budget.
+    fn block_ip(
+        &self,
+        ip_addr: IpAddr,
+        reason: &str,
+        threat_type_key: Option<&str>,
+        state: &mut AppState,
+    ) -> Result<BlockOutcome> {
         // Validate by round-tripping through IpAddr (already guaranteed by
         // the type system, but we re-parse for defence-in-depth if the IP
         // somehow came from an untrusted string somewhere).
@@ -508,19 +939,39 @@ impl ResponseEngine {
             .parse()
             .context("IP address validation failed")?;
 
-        // Skip if this IP is already blocked (prevents duplicate iptables rules).
+        // (1) Skip if this IP is already blocked (prevents duplicate iptables rules).
         if state.is_ip_blocked(&validated) {
             info!(ip = %validated, "IP already blocked, skipping duplicate");
-            return Ok(());
+            return Ok(BlockOutcome::AlreadyBlocked);
         }
 
-        // Check whitelist.
+        // (2) Check user-curated whitelist. Highest priority — user decision wins.
         if ip::is_whitelisted(&validated, &self.whitelist) {
             info!(ip = %validated, "IP is whitelisted, skipping block");
-            return Ok(());
+            return Ok(BlockOutcome::Whitelisted);
         }
 
-        // Rate limiting: prune entries older than 60 seconds, then check
+        // (3) v2.6.0 Bucket A safety pin — check well-known infrastructure list.
+        // If an IP is in a shipped CDN/cloud/code-host CIDR, we refuse to
+        // auto-block it. This prevents the class of bug documented in
+        // docs/TRIAGE_PHASE_A0.md where Aegis firewalls legitimate
+        // CloudFront/GitHub/Anthropic endpoints based on noisy threat intel.
+        //
+        // The detection itself still gets recorded in threats.jsonl (the
+        // caller emits the ThreatEvent before calling us). We just refuse
+        // to install the firewall rule.
+        if self.is_well_known_destination(&validated) {
+            let provider = self.describe_well_known_destination(&validated);
+            warn!(
+                ip = %validated,
+                provider = %provider,
+                reason = reason,
+                "SAFETY PIN ACTIVATED: refusing to auto-block well-known infrastructure IP"
+            );
+            return Ok(BlockOutcome::SafetyPinInfrastructure(provider));
+        }
+
+        // (4) Rate limiting: prune entries older than 60 seconds, then check
         // whether we've exceeded the configured maximum.
         {
             let mut recent = self.recent_blocks.lock().unwrap();
@@ -536,53 +987,82 @@ impl ResponseEngine {
                     max = self.config.max_blocks_per_minute,
                     "Rate limit exceeded, skipping block"
                 );
-                return Ok(());
+                return Ok(BlockOutcome::RateLimited);
             }
 
             recent.push_back(Instant::now());
         }
 
-        // Execute the firewall block.
+        // (5) Execute the firewall block.
         info!(ip = %validated, reason = reason, "Blocking IP address");
         if let Err(e) = self.firewall.block_ip(&validated) {
             error!(ip = %validated, error = %e, "Firewall block failed — IP NOT added to block list");
             return Err(e);
         }
 
-        // Repeat offender escalation: record strike and check threshold.
-        let threshold = self.config.repeat_offender_threshold;
-        let expires_at = if threshold > 0 {
+        // (6) Determine expires_at: zero-tolerance, strike escalation, or default.
+        //
+        // Zero-tolerance (Bucket B) short-circuits the normal logic: if the
+        // threat type is in the user's zero_tolerance_threats list, we
+        // immediately promote to permanent ban and mark the IP as escalated.
+        //
+        // Otherwise, the existing repeat-offender strike counter decides.
+        let is_zero_tol = threat_type_key
+            .map(|k| self.is_zero_tolerance(k))
+            .unwrap_or(false);
+
+        let expires_at = if is_zero_tol {
+            // Zero-tolerance path: permanent ban on first offense.
             let window = Scheduler::parse_duration(&self.config.repeat_offender_window)
                 .map(|d| chrono::Duration::from_std(d).unwrap_or(chrono::Duration::days(30)))
                 .unwrap_or(chrono::Duration::days(30));
+            // Record a strike so the history is complete, then immediately
+            // escalate (bypassing the threshold check).
+            let _strike_count = state.record_strike(validated, reason, window);
+            if !state.is_escalated(&validated) {
+                state.mark_escalated(&validated);
+            }
+            warn!(
+                ip = %validated,
+                threat_type = ?threat_type_key,
+                "ZERO-TOLERANCE: permanent ban on first offense"
+            );
+            None
+        } else {
+            let threshold = self.config.repeat_offender_threshold;
+            if threshold > 0 {
+                let window = Scheduler::parse_duration(&self.config.repeat_offender_window)
+                    .map(|d| chrono::Duration::from_std(d).unwrap_or(chrono::Duration::days(30)))
+                    .unwrap_or(chrono::Duration::days(30));
 
-            let strike_count = state.record_strike(validated, reason, window);
+                let strike_count = state.record_strike(validated, reason, window);
 
-            if state.is_escalated(&validated) || strike_count >= threshold as usize {
-                if !state.is_escalated(&validated) {
-                    state.mark_escalated(&validated);
+                if state.is_escalated(&validated) || strike_count >= threshold as usize {
+                    if !state.is_escalated(&validated) {
+                        state.mark_escalated(&validated);
+                    }
+                    info!(
+                        ip = %validated,
+                        strikes = strike_count,
+                        threshold = threshold,
+                        "Repeat offender escalated to permanent ban"
+                    );
+                    None // permanent
+                } else {
+                    Some(
+                        Utc::now()
+                            + chrono::Duration::from_std(self.block_duration)
+                                .unwrap_or_else(|_| chrono::Duration::hours(24)),
+                    )
                 }
-                info!(
-                    ip = %validated,
-                    strikes = strike_count,
-                    threshold = threshold,
-                    "Repeat offender escalated to permanent ban"
-                );
-                None // permanent
             } else {
+                // Escalation disabled — use default duration.
                 Some(
                     Utc::now()
                         + chrono::Duration::from_std(self.block_duration)
                             .unwrap_or_else(|_| chrono::Duration::hours(24)),
                 )
             }
-        } else {
-            // Escalation disabled — use default duration.
-            Some(
-                Utc::now()
-                    + chrono::Duration::from_std(self.block_duration)
-                        .unwrap_or_else(|_| chrono::Duration::hours(24)),
-            )
         };
 
         let entry = BlockEntry {
@@ -594,7 +1074,101 @@ impl ResponseEngine {
         };
         state.block_ip(entry);
 
-        Ok(())
+        // Distinguish permanent zero-tolerance from normal block in the outcome
+        // so callers and audit logs can tell them apart.
+        if is_zero_tol {
+            Ok(BlockOutcome::BlockedPermanentZeroTolerance(
+                threat_type_key.unwrap_or("").to_string(),
+            ))
+        } else {
+            Ok(BlockOutcome::Blocked)
+        }
+    }
+
+    /// v2.6.0 Bucket D: compare the persisted block list against the live
+    /// firewall chain and return a report of discrepancies. Optionally
+    /// repairs drift if `config.auto_reconcile_firewall` is true.
+    ///
+    /// # Handling the large historical drift
+    ///
+    /// When this is first called on Chris's box, the report will contain a
+    /// huge number of orphaned firewall rules (~500+ iptables rules that
+    /// are NOT in block_list.json, mostly historical threat-intel-match
+    /// blocks that were never cleaned up). The first-run behavior must not
+    /// auto-reconcile that mess — it might silently remove manual admin
+    /// decisions. So: the report is produced, but auto-repair only fires
+    /// AFTER the operator has explicitly enabled `auto_reconcile_firewall`
+    /// in config AND we've verified the drift is "small" (less than
+    /// INITIAL_DRIFT_THRESHOLD entries out of sync). For larger drift,
+    /// we log a warning and refuse to auto-repair even when enabled,
+    /// pointing the operator at `aegis reconcile --first-run` (future CLI).
+    pub fn reconcile_firewall_state(&self, state: &mut AppState) -> ReconcileReport {
+        use std::collections::HashSet;
+
+        const INITIAL_DRIFT_THRESHOLD: usize = 100;
+
+        let persisted: HashSet<IpAddr> = state.blocked_ips.keys().copied().collect();
+        let firewall: HashSet<IpAddr> = match self.firewall.list_blocked_ips() {
+            Ok(ips) => ips.into_iter().collect(),
+            Err(e) => {
+                warn!(error = %e, "Firewall list_blocked_ips failed during reconciliation");
+                HashSet::new()
+            }
+        };
+
+        let missing_from_firewall: Vec<IpAddr> =
+            persisted.difference(&firewall).copied().collect();
+        let orphaned_in_firewall: Vec<IpAddr> =
+            firewall.difference(&persisted).copied().collect();
+
+        let total_drift = missing_from_firewall.len() + orphaned_in_firewall.len();
+
+        info!(
+            persisted = persisted.len(),
+            firewall = firewall.len(),
+            missing = missing_from_firewall.len(),
+            orphaned = orphaned_in_firewall.len(),
+            "Firewall drift reconciliation"
+        );
+
+        let mut auto_reconciled = false;
+        if self.config.auto_reconcile_firewall {
+            if total_drift > INITIAL_DRIFT_THRESHOLD {
+                warn!(
+                    total_drift = total_drift,
+                    threshold = INITIAL_DRIFT_THRESHOLD,
+                    "Drift exceeds safety threshold; skipping auto-reconciliation. \
+                     Run `aegis reconcile --first-run` to clean up, or raise the \
+                     threshold if this box legitimately has many rules."
+                );
+            } else {
+                // Re-add missing rules.
+                for ip in &missing_from_firewall {
+                    if let Err(e) = self.firewall.block_ip(ip) {
+                        warn!(ip = %ip, error = %e, "Reconcile: failed to re-add missing firewall rule");
+                    } else {
+                        info!(ip = %ip, "Reconcile: re-added missing firewall rule");
+                    }
+                }
+                // Remove orphaned rules.
+                for ip in &orphaned_in_firewall {
+                    if let Err(e) = self.firewall.unblock_ip(ip) {
+                        warn!(ip = %ip, error = %e, "Reconcile: failed to remove orphaned firewall rule");
+                    } else {
+                        info!(ip = %ip, "Reconcile: removed orphaned firewall rule");
+                    }
+                }
+                auto_reconciled = true;
+            }
+        }
+
+        ReconcileReport {
+            persisted_count: persisted.len(),
+            firewall_count: firewall.len(),
+            missing_from_firewall,
+            orphaned_in_firewall,
+            auto_reconciled,
+        }
     }
 
     /// Block an IP address via the configured firewall backend (manual/CLI use).
@@ -857,5 +1431,840 @@ fn threat_type_to_config_key(tt: &ThreatType) -> String {
         ThreatType::SuspiciousCommand => "suspicious_command".into(),
         ThreatType::CisBenchmarkFail => "cis_benchmark_fail".into(),
         ThreatType::ForensicSnapshot => "forensic_snapshot".into(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (v2.6.0 Bucket A + B)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::AegisConfig;
+    use crate::core::state::AppState;
+    use crate::core::threat::{ThreatEvent, ThreatSeverity, ThreatType};
+
+    // -----------------------------------------------------------------------
+    // Test helpers
+    // -----------------------------------------------------------------------
+
+    /// No-op firewall backend for tests. All operations succeed without
+    /// touching iptables/nftables/ufw. Lets us unit-test block_ip() and
+    /// respond() without needing root or real kernel firewall state.
+    struct NoOpBackend;
+
+    impl FirewallBackend for NoOpBackend {
+        fn init(&self) -> Result<()> {
+            Ok(())
+        }
+        fn block_ip(&self, _ip: &IpAddr) -> Result<()> {
+            Ok(())
+        }
+        fn unblock_ip(&self, _ip: &IpAddr) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ResponseEngine {
+        /// Test-only constructor. Bypasses the normal firewall-backend
+        /// selection (which would need root for iptables) and injects a
+        /// NoOpBackend instead.
+        fn for_test(config: ResponseConfig) -> Self {
+            let whitelist = ip::parse_whitelist(&config.whitelist);
+            let well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+            let zero_tolerance_threats: HashSet<String> =
+                config.zero_tolerance_threats.iter().cloned().collect();
+            let firewall: Box<dyn FirewallBackend> = Box::new(NoOpBackend);
+            let block_duration = Scheduler::parse_duration(&config.default_block_duration)
+                .unwrap_or(Duration::from_secs(86400));
+            Self {
+                config,
+                whitelist,
+                well_known_destinations,
+                zero_tolerance_threats,
+                firewall,
+                block_duration,
+                recent_blocks: std::sync::Mutex::new(VecDeque::new()),
+                data_dir: std::path::PathBuf::from("/tmp/aegis-test"),
+                geoip: None,
+            }
+        }
+    }
+
+    fn default_state() -> AppState {
+        AppState::with_config(AegisConfig::default())
+    }
+
+    // -----------------------------------------------------------------------
+    // BlockOutcome unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_block_outcome_did_install_rule() {
+        assert!(BlockOutcome::Blocked.did_install_rule());
+        assert!(BlockOutcome::BlockedPermanentZeroTolerance("x".into()).did_install_rule());
+        assert!(!BlockOutcome::AlreadyBlocked.did_install_rule());
+        assert!(!BlockOutcome::Whitelisted.did_install_rule());
+        assert!(!BlockOutcome::SafetyPinInfrastructure("x".into()).did_install_rule());
+        assert!(!BlockOutcome::RateLimited.did_install_rule());
+    }
+
+    #[test]
+    fn test_block_outcome_describe_messages_are_distinct() {
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+        let blocked = BlockOutcome::Blocked.describe(ip);
+        let pinned = BlockOutcome::SafetyPinInfrastructure("Cloudflare".into()).describe(ip);
+        let whitelisted = BlockOutcome::Whitelisted.describe(ip);
+        let zero_tol = BlockOutcome::BlockedPermanentZeroTolerance("path_traversal".into())
+            .describe(ip);
+
+        // Each outcome produces a distinct message so operators can tell
+        // them apart in the threat log.
+        assert!(blocked.contains("Blocked IP 1.2.3.4"));
+        assert!(pinned.contains("Safety pin") && pinned.contains("Cloudflare"));
+        assert!(whitelisted.contains("whitelisted"));
+        assert!(zero_tol.contains("PERMANENTLY") && zero_tol.contains("path_traversal"));
+        assert_ne!(blocked, pinned);
+        assert_ne!(blocked, zero_tol);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bucket A: safety pin tests (well_known_destinations)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_safety_pin_blocks_anthropic_ip() {
+        // 160.79.104.10 is in Anthropic's ARIN-allocated range 160.79.104.0/21.
+        // This is the exact IP that triggered Chris's original alert.
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let ip: IpAddr = "160.79.104.10".parse().unwrap();
+        assert!(engine.is_well_known_destination(&ip));
+    }
+
+    #[test]
+    fn test_safety_pin_blocks_cloudfront_ips() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        // Exact IPs from Chris's AEGIS_BLOCK chain with 19k-23k packet drops.
+        for ip_str in &[
+            "13.224.185.97",
+            "13.224.185.100",
+            "13.224.185.102",
+            "13.224.185.127",
+        ] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                engine.is_well_known_destination(&ip),
+                "CloudFront IP {} should be in safety pin",
+                ip_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_safety_pin_blocks_github_ips() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        for ip_str in &["140.82.112.25", "140.82.112.26", "140.82.114.22"] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                engine.is_well_known_destination(&ip),
+                "GitHub IP {} should be in safety pin",
+                ip_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_safety_pin_blocks_cloudflare_ips() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        for ip_str in &[
+            "104.28.164.48",
+            "104.16.1.1",
+            "172.64.1.1",
+            "162.158.1.1",
+        ] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                engine.is_well_known_destination(&ip),
+                "Cloudflare IP {} should be in safety pin",
+                ip_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_safety_pin_does_not_block_random_public_ips() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        // Random IPs that should NOT be in the safety pin list — if any of
+        // these somehow match, the CIDR list is too broad and needs fixing.
+        for ip_str in &["1.2.3.4", "185.156.73.233", "79.124.40.174", "45.148.10.187"] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !engine.is_well_known_destination(&ip),
+                "Random public IP {} should NOT be in safety pin (list is too broad!)",
+                ip_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_safety_pin_describe_provider_names() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let anthropic: IpAddr = "160.79.104.10".parse().unwrap();
+        let cf: IpAddr = "104.16.1.1".parse().unwrap();
+        let gh: IpAddr = "140.82.112.26".parse().unwrap();
+        let cloudfront: IpAddr = "13.224.185.100".parse().unwrap();
+        let google: IpAddr = "142.250.32.6".parse().unwrap();
+
+        assert!(engine.describe_well_known_destination(&anthropic).contains("Anthropic"));
+        assert!(engine.describe_well_known_destination(&cf).contains("Cloudflare"));
+        assert!(engine.describe_well_known_destination(&gh).contains("GitHub"));
+        assert!(engine
+            .describe_well_known_destination(&cloudfront)
+            .contains("CloudFront"));
+        assert!(engine.describe_well_known_destination(&google).contains("Google"));
+    }
+
+    #[test]
+    fn test_block_ip_safety_pin_skips_firewall_call() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "13.224.185.100".parse().unwrap();
+
+        let outcome = engine
+            .block_ip(ip, "test beacon", Some("c2_beacon"), &mut state)
+            .unwrap();
+
+        match outcome {
+            BlockOutcome::SafetyPinInfrastructure(provider) => {
+                assert!(provider.contains("CloudFront"));
+            }
+            other => panic!("Expected SafetyPinInfrastructure, got {:?}", other),
+        }
+
+        // Verify no entry was added to state.blocked_ips
+        assert!(!state.is_ip_blocked(&ip));
+        assert!(state.blocked_ips.is_empty());
+    }
+
+    #[test]
+    fn test_block_ip_whitelist_wins_over_safety_pin() {
+        // Construct a config where the same IP is in BOTH the user whitelist
+        // AND the safety pin list. Expected: user whitelist wins (Whitelisted
+        // outcome), because user choice is the highest priority.
+        let mut config = ResponseConfig::default();
+        config.whitelist.push("160.79.104.0/21".into()); // also in WKD default
+
+        let engine = ResponseEngine::for_test(config);
+        let mut state = default_state();
+        let ip: IpAddr = "160.79.104.10".parse().unwrap();
+
+        let outcome = engine
+            .block_ip(ip, "test", Some("c2_beacon"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Whitelisted);
+    }
+
+    #[test]
+    fn test_block_ip_non_infra_ip_does_block() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "185.156.73.233".parse().unwrap(); // Reldas-net, not infra
+
+        let outcome = engine
+            .block_ip(ip, "brute force from this IP", Some("brute_force"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Blocked);
+        assert!(state.is_ip_blocked(&ip));
+    }
+
+    #[test]
+    fn test_block_ip_empty_wkd_list_behaves_like_v2_5() {
+        // Migration safety: a user who has explicitly set well_known_destinations = []
+        // gets the v2.5.0 behavior (no safety pin).
+        let mut config = ResponseConfig::default();
+        config.well_known_destinations = vec![]; // empty list, not default
+
+        let engine = ResponseEngine::for_test(config);
+        let mut state = default_state();
+        let ip: IpAddr = "13.224.185.100".parse().unwrap();
+
+        // Without the safety pin, a CloudFront IP would get blocked (this is
+        // the pre-v2.6.0 behavior we're documenting as a regression test).
+        let outcome = engine
+            .block_ip(ip, "test", Some("c2_beacon"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Blocked);
+    }
+
+    // -----------------------------------------------------------------------
+    // Bucket B: zero-tolerance tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_zero_tolerance_default_list_includes_path_traversal() {
+        let config = ResponseConfig::default();
+        assert!(config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "path_traversal"));
+        assert!(config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "sqli_attempt"));
+        assert!(config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "reverse_shell"));
+    }
+
+    #[test]
+    fn test_zero_tolerance_default_list_excludes_noisy_types() {
+        // Conservative default: these types are NOT zero-tolerance because
+        // they have higher false-positive rates.
+        let config = ResponseConfig::default();
+        assert!(!config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "web_ddos"));
+        assert!(!config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "brute_force"));
+        assert!(!config
+            .zero_tolerance_threats
+            .iter()
+            .any(|t| t == "scanner_probe"));
+    }
+
+    #[test]
+    fn test_is_zero_tolerance_lookup() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        assert!(engine.is_zero_tolerance("path_traversal"));
+        assert!(engine.is_zero_tolerance("sqli_attempt"));
+        assert!(engine.is_zero_tolerance("reverse_shell"));
+        assert!(!engine.is_zero_tolerance("brute_force"));
+        assert!(!engine.is_zero_tolerance("web_ddos"));
+        assert!(!engine.is_zero_tolerance("unknown_type"));
+    }
+
+    #[test]
+    fn test_block_ip_zero_tolerance_first_offense_permaban() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "185.156.73.233".parse().unwrap(); // not infra, not whitelisted
+
+        // First offense on a zero-tolerance threat type
+        let outcome = engine
+            .block_ip(
+                ip,
+                "Path traversal attempt: /../../etc/passwd",
+                Some("path_traversal"),
+                &mut state,
+            )
+            .unwrap();
+
+        match outcome {
+            BlockOutcome::BlockedPermanentZeroTolerance(key) => {
+                assert_eq!(key, "path_traversal");
+            }
+            other => panic!("Expected BlockedPermanentZeroTolerance, got {:?}", other),
+        }
+
+        // Block entry must have expires_at = None (permanent)
+        assert!(state.is_ip_blocked(&ip));
+        let entry = state.blocked_ips.get(&ip).unwrap();
+        assert!(entry.expires_at.is_none(), "Zero-tolerance ban must be permanent");
+        assert!(entry.auto, "Should be marked as auto");
+
+        // And the IP must be marked as escalated in strike history
+        assert!(state.is_escalated(&ip), "Zero-tolerance should mark IP as escalated");
+    }
+
+    #[test]
+    fn test_block_ip_non_zero_tolerance_uses_normal_expiry() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "185.156.73.233".parse().unwrap();
+
+        // Normal (non-zero-tolerance) threat — first offense should be a
+        // regular 24h ban, not permanent.
+        let outcome = engine
+            .block_ip(ip, "brute force", Some("brute_force"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Blocked);
+
+        assert!(state.is_ip_blocked(&ip));
+        let entry = state.blocked_ips.get(&ip).unwrap();
+        assert!(
+            entry.expires_at.is_some(),
+            "Non-zero-tolerance first offense should have a time-bounded ban"
+        );
+    }
+
+    #[test]
+    fn test_zero_tolerance_does_not_override_whitelist() {
+        let mut config = ResponseConfig::default();
+        config.whitelist.push("203.0.113.0/24".into());
+        let engine = ResponseEngine::for_test(config);
+        let mut state = default_state();
+        let ip: IpAddr = "203.0.113.42".parse().unwrap();
+
+        // Even though this is a zero-tolerance threat type, the IP is in the
+        // user's whitelist — whitelist wins.
+        let outcome = engine
+            .block_ip(ip, "sqli", Some("sqli_attempt"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Whitelisted);
+        assert!(!state.is_ip_blocked(&ip));
+    }
+
+    #[test]
+    fn test_zero_tolerance_does_not_override_safety_pin() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        // Cloudflare IP + path_traversal attempt — even though the threat
+        // type is zero-tolerance, we must NOT auto-block Cloudflare IPs.
+        let ip: IpAddr = "104.16.1.1".parse().unwrap();
+
+        let outcome = engine
+            .block_ip(ip, "sqli via CF", Some("sqli_attempt"), &mut state)
+            .unwrap();
+        match outcome {
+            BlockOutcome::SafetyPinInfrastructure(_) => {}
+            other => panic!(
+                "Safety pin must win over zero-tolerance, got {:?}",
+                other
+            ),
+        }
+        assert!(!state.is_ip_blocked(&ip));
+    }
+
+    #[test]
+    fn test_block_ip_already_blocked_is_idempotent() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "185.156.73.233".parse().unwrap();
+
+        // First block
+        let first = engine
+            .block_ip(ip, "test", Some("brute_force"), &mut state)
+            .unwrap();
+        assert_eq!(first, BlockOutcome::Blocked);
+
+        // Second call on the same IP — should be AlreadyBlocked, idempotent
+        let second = engine
+            .block_ip(ip, "test2", Some("brute_force"), &mut state)
+            .unwrap();
+        assert_eq!(second, BlockOutcome::AlreadyBlocked);
+    }
+
+    #[test]
+    fn test_block_ip_no_threat_type_key_no_zero_tolerance() {
+        // Manual/CLI blocks pass None for threat_type_key. Zero-tolerance
+        // must not apply in that path.
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let ip: IpAddr = "185.156.73.233".parse().unwrap();
+
+        let outcome = engine
+            .block_ip(ip, "manual cli block", None, &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Blocked);
+        let entry = state.blocked_ips.get(&ip).unwrap();
+        assert!(entry.expires_at.is_some()); // normal time-bounded ban
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration: respond() produces accurate messages via BlockOutcome
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_respond_safety_pin_message_is_accurate() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+
+        let event = ThreatEvent::new(
+            ThreatType::C2Beacon,
+            "network",
+            "Potential C2 beacon: 11 connections to 160.79.104.10:443",
+        )
+        .with_source_ip("160.79.104.10".parse().unwrap())
+        .with_severity(ThreatSeverity::Critical);
+
+        let msg = engine.respond(&event, &mut state).await.unwrap();
+        // The default override now says c2_beacon → alert, so we expect
+        // an alert message, not a block attempt. This test also validates
+        // the override downgrade (part of Bucket A).
+        assert!(
+            msg.contains("Alert") || msg.contains("alert"),
+            "c2_beacon should be alerted, not blocked. Got: {}",
+            msg
+        );
+        // No block should have happened
+        let ip: IpAddr = "160.79.104.10".parse().unwrap();
+        assert!(!state.is_ip_blocked(&ip));
+    }
+
+    #[tokio::test]
+    async fn test_respond_path_traversal_triggers_zero_tolerance_permaban() {
+        let engine = ResponseEngine::for_test(ResponseConfig::default());
+        let mut state = default_state();
+        let attacker: IpAddr = "185.156.73.233".parse().unwrap();
+
+        let event = ThreatEvent::new(
+            ThreatType::PathTraversal,
+            "web",
+            "Path traversal attempt: /../../etc/passwd",
+        )
+        .with_source_ip(attacker);
+
+        let msg = engine.respond(&event, &mut state).await.unwrap();
+        assert!(
+            msg.contains("PERMANENTLY") || msg.contains("zero-tolerance"),
+            "Expected zero-tolerance message, got: {}",
+            msg
+        );
+        assert!(state.is_ip_blocked(&attacker));
+        assert!(state.is_escalated(&attacker));
+        assert!(state.blocked_ips[&attacker].expires_at.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Backwards compat & regression
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_default_has_c2_beacon_override_as_alert() {
+        // Bucket A: the override was downgraded from "block" to "alert".
+        // This test documents the new default and catches accidental reverts.
+        let config = ResponseConfig::default();
+        assert_eq!(
+            config.overrides.get("c2_beacon").map(|s| s.as_str()),
+            Some("alert")
+        );
+    }
+
+    #[test]
+    fn test_config_default_wkd_list_is_nonempty() {
+        let config = ResponseConfig::default();
+        assert!(
+            !config.well_known_destinations.is_empty(),
+            "Default WKD list must not be empty — the whole point of the safety pin"
+        );
+        // Sanity: a few critical entries must be present
+        assert!(config
+            .well_known_destinations
+            .iter()
+            .any(|c| c.starts_with("160.79.104")));
+        assert!(config
+            .well_known_destinations
+            .iter()
+            .any(|c| c.starts_with("140.82.112")));
+        assert!(config
+            .well_known_destinations
+            .iter()
+            .any(|c| c.starts_with("13.224.0")));
+    }
+
+    #[test]
+    fn test_config_default_zero_tolerance_is_nonempty() {
+        let config = ResponseConfig::default();
+        assert!(!config.zero_tolerance_threats.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bucket D: drift detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_iptables_list_output_basic() {
+        let input = "\
+-N AEGIS_BLOCK
+-A AEGIS_BLOCK -s 1.2.3.4/32 -j DROP
+-A AEGIS_BLOCK -s 5.6.7.8/32 -j DROP
+-A AEGIS_BLOCK -s 2001:db8::1/128 -j DROP
+";
+        let ips = parse_iptables_list_output(input);
+        assert_eq!(ips.len(), 3);
+        assert!(ips.contains(&"1.2.3.4".parse().unwrap()));
+        assert!(ips.contains(&"5.6.7.8".parse().unwrap()));
+        assert!(ips.contains(&"2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_parse_iptables_list_output_ignores_chain_creation() {
+        let input = "-N AEGIS_BLOCK\n";
+        let ips = parse_iptables_list_output(input);
+        assert!(ips.is_empty());
+    }
+
+    #[test]
+    fn test_parse_iptables_list_output_ignores_malformed_lines() {
+        let input = "\
+-N AEGIS_BLOCK
+-A AEGIS_BLOCK -s 1.2.3.4/32 -j DROP
+random garbage line
+-A AEGIS_BLOCK -s not-an-ip -j DROP
+-A AEGIS_BLOCK -j DROP
+-A AEGIS_BLOCK -s 9.8.7.6/32 -j DROP
+";
+        let ips = parse_iptables_list_output(input);
+        // Only the two valid entries should parse.
+        assert_eq!(ips.len(), 2);
+        assert!(ips.contains(&"1.2.3.4".parse().unwrap()));
+        assert!(ips.contains(&"9.8.7.6".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_parse_nft_list_output_basic() {
+        let input = "\
+table inet aegis {
+    chain input {
+        type filter hook input priority 0; policy accept;
+        ip saddr 1.2.3.4 drop
+        ip saddr 5.6.7.8 drop
+        ip6 saddr 2001:db8::1 drop
+    }
+}
+";
+        let ips = parse_nft_list_output(input);
+        assert_eq!(ips.len(), 3);
+        assert!(ips.contains(&"1.2.3.4".parse().unwrap()));
+        assert!(ips.contains(&"2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn test_parse_ufw_status_output_basic() {
+        let input = "\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+Anywhere                   DENY IN     1.2.3.4
+Anywhere                   ALLOW IN    10.0.0.0/8
+Anywhere (v6)              DENY IN     2001:db8::1
+";
+        let ips = parse_ufw_status_output(input);
+        assert_eq!(ips.len(), 2);
+        assert!(ips.contains(&"1.2.3.4".parse().unwrap()));
+        assert!(ips.contains(&"2001:db8::1".parse().unwrap()));
+    }
+
+    /// Mock backend that lets tests control what list_blocked_ips returns,
+    /// so we can exercise the reconcile logic without touching real iptables.
+    struct MockFirewall {
+        pub live_ips: std::sync::Mutex<Vec<IpAddr>>,
+        pub block_calls: std::sync::Mutex<Vec<IpAddr>>,
+        pub unblock_calls: std::sync::Mutex<Vec<IpAddr>>,
+    }
+
+    impl FirewallBackend for MockFirewall {
+        fn init(&self) -> Result<()> {
+            Ok(())
+        }
+        fn block_ip(&self, ip: &IpAddr) -> Result<()> {
+            self.block_calls.lock().unwrap().push(*ip);
+            self.live_ips.lock().unwrap().push(*ip);
+            Ok(())
+        }
+        fn unblock_ip(&self, ip: &IpAddr) -> Result<()> {
+            self.unblock_calls.lock().unwrap().push(*ip);
+            self.live_ips.lock().unwrap().retain(|x| x != ip);
+            Ok(())
+        }
+        fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+            Ok(self.live_ips.lock().unwrap().clone())
+        }
+    }
+
+    fn response_engine_with_mock_firewall(
+        config: ResponseConfig,
+        live_ips: Vec<IpAddr>,
+    ) -> (ResponseEngine, std::sync::Arc<MockFirewall>) {
+        let mock = std::sync::Arc::new(MockFirewall {
+            live_ips: std::sync::Mutex::new(live_ips),
+            block_calls: std::sync::Mutex::new(Vec::new()),
+            unblock_calls: std::sync::Mutex::new(Vec::new()),
+        });
+        // Replicate for_test() but with our mock instead of NoOpBackend.
+        let whitelist = ip::parse_whitelist(&config.whitelist);
+        let well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+        let zero_tolerance_threats: HashSet<String> =
+            config.zero_tolerance_threats.iter().cloned().collect();
+        let firewall: Box<dyn FirewallBackend> = {
+            // We need a Box<dyn FirewallBackend>, but we also want to keep
+            // a handle to the mock for assertions. Use a newtype that delegates.
+            struct BackendDelegate(std::sync::Arc<MockFirewall>);
+            impl FirewallBackend for BackendDelegate {
+                fn init(&self) -> Result<()> {
+                    self.0.init()
+                }
+                fn block_ip(&self, ip: &IpAddr) -> Result<()> {
+                    self.0.block_ip(ip)
+                }
+                fn unblock_ip(&self, ip: &IpAddr) -> Result<()> {
+                    self.0.unblock_ip(ip)
+                }
+                fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
+                    self.0.list_blocked_ips()
+                }
+            }
+            Box::new(BackendDelegate(mock.clone()))
+        };
+        let block_duration = Scheduler::parse_duration(&config.default_block_duration)
+            .unwrap_or(Duration::from_secs(86400));
+        let engine = ResponseEngine {
+            config,
+            whitelist,
+            well_known_destinations,
+            zero_tolerance_threats,
+            firewall,
+            block_duration,
+            recent_blocks: std::sync::Mutex::new(VecDeque::new()),
+            data_dir: std::path::PathBuf::from("/tmp/aegis-test"),
+            geoip: None,
+        };
+        (engine, mock)
+    }
+
+    #[test]
+    fn test_reconcile_report_no_drift() {
+        let config = ResponseConfig::default();
+        let (engine, _mock) = response_engine_with_mock_firewall(config, vec![]);
+        let mut state = default_state();
+        let report = engine.reconcile_firewall_state(&mut state);
+        assert_eq!(report.persisted_count, 0);
+        assert_eq!(report.firewall_count, 0);
+        assert!(report.is_in_sync());
+        assert_eq!(report.total_drift(), 0);
+        assert!(!report.auto_reconciled); // nothing to do
+    }
+
+    #[test]
+    fn test_reconcile_report_missing_from_firewall() {
+        // Persisted: 3 IPs, Firewall: 1 IP → 2 missing
+        let config = ResponseConfig::default();
+        let fw_ip: IpAddr = "1.1.1.1".parse().unwrap();
+        let (engine, _mock) = response_engine_with_mock_firewall(config, vec![fw_ip]);
+
+        let mut state = default_state();
+        for ip_str in &["1.1.1.1", "2.2.2.2", "3.3.3.3"] {
+            state.block_ip(BlockEntry {
+                ip: ip_str.parse().unwrap(),
+                reason: "test".into(),
+                blocked_at: Utc::now(),
+                expires_at: None,
+                auto: true,
+            });
+        }
+
+        let report = engine.reconcile_firewall_state(&mut state);
+        assert_eq!(report.persisted_count, 3);
+        assert_eq!(report.firewall_count, 1);
+        assert_eq!(report.missing_from_firewall.len(), 2);
+        assert!(report.orphaned_in_firewall.is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_report_orphaned_in_firewall() {
+        // Persisted: 1 IP, Firewall: 3 IPs → 2 orphaned
+        let config = ResponseConfig::default();
+        let (engine, _mock) = response_engine_with_mock_firewall(
+            config,
+            vec![
+                "1.1.1.1".parse().unwrap(),
+                "2.2.2.2".parse().unwrap(),
+                "3.3.3.3".parse().unwrap(),
+            ],
+        );
+
+        let mut state = default_state();
+        state.block_ip(BlockEntry {
+            ip: "1.1.1.1".parse().unwrap(),
+            reason: "test".into(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            auto: true,
+        });
+
+        let report = engine.reconcile_firewall_state(&mut state);
+        assert_eq!(report.persisted_count, 1);
+        assert_eq!(report.firewall_count, 3);
+        assert!(report.missing_from_firewall.is_empty());
+        assert_eq!(report.orphaned_in_firewall.len(), 2);
+    }
+
+    #[test]
+    fn test_reconcile_auto_repair_disabled_by_default() {
+        let config = ResponseConfig::default();
+        assert!(!config.auto_reconcile_firewall); // verify default
+        let (engine, mock) = response_engine_with_mock_firewall(
+            config,
+            vec!["1.1.1.1".parse().unwrap()],
+        );
+        let mut state = default_state();
+        state.block_ip(BlockEntry {
+            ip: "2.2.2.2".parse().unwrap(),
+            reason: "test".into(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            auto: true,
+        });
+
+        let _report = engine.reconcile_firewall_state(&mut state);
+        // With auto_reconcile_firewall = false, no backend mutation calls.
+        assert!(mock.block_calls.lock().unwrap().is_empty());
+        assert!(mock.unblock_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reconcile_auto_repair_fixes_small_drift() {
+        let mut config = ResponseConfig::default();
+        config.auto_reconcile_firewall = true;
+
+        let orphan: IpAddr = "9.9.9.9".parse().unwrap();
+        let missing: IpAddr = "203.0.113.50".parse().unwrap();
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![orphan]);
+
+        let mut state = default_state();
+        state.block_ip(BlockEntry {
+            ip: missing,
+            reason: "test".into(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            auto: true,
+        });
+
+        let report = engine.reconcile_firewall_state(&mut state);
+        assert!(report.auto_reconciled);
+        // block_ip should have been called to add the missing IP
+        assert!(mock.block_calls.lock().unwrap().contains(&missing));
+        // unblock_ip should have been called to remove the orphan
+        assert!(mock.unblock_calls.lock().unwrap().contains(&orphan));
+    }
+
+    #[test]
+    fn test_reconcile_auto_repair_skips_when_drift_is_huge() {
+        // When the drift count exceeds the safety threshold, auto-repair
+        // must refuse to act even if enabled — prevents catastrophic
+        // cleanup on a box that has many legitimate historical rules.
+        let mut config = ResponseConfig::default();
+        config.auto_reconcile_firewall = true;
+
+        // Generate 200 orphaned IPs (above the 100 threshold)
+        let orphans: Vec<IpAddr> = (1..=200u8)
+            .map(|i| format!("10.0.0.{}", i).parse::<IpAddr>().unwrap())
+            .collect();
+
+        let (engine, mock) = response_engine_with_mock_firewall(config, orphans.clone());
+        let mut state = default_state();
+
+        let report = engine.reconcile_firewall_state(&mut state);
+        assert_eq!(report.orphaned_in_firewall.len(), 200);
+        // Auto-reconciled should be false because we crossed the threshold
+        assert!(!report.auto_reconciled);
+        // No unblock calls should have been made
+        assert!(mock.unblock_calls.lock().unwrap().is_empty());
     }
 }

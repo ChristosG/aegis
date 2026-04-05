@@ -1,3 +1,4 @@
+pub mod asn_lookup;
 pub mod container;
 pub mod geoip;
 pub mod hash;

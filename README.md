@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.6.0-blue">
   <img alt="Language" src="https://img.shields.io/badge/language-Rust-orange">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Linux-green">
@@ -49,6 +50,24 @@ sudo apt remove aegis-full    # or aegis
 # Install script
 curl -fsSL https://raw.githubusercontent.com/ChristosG/aegis/main/uninstall.sh | sudo bash -s -- --yes
 ```
+
+---
+
+## What's new in v2.6.0
+
+v2.6.0 is the **"Safety Pin & Proper Detection"** release. It ships five coordinated changes built in response to a production incident where an earlier version of Aegis silently firewall-blocked legitimate CloudFront and GitHub endpoints due to a false-positive C2 beacon detection. Full post-mortem + design doc at `docs/specs/2026-04-05-aegis-v2-design.md`.
+
+- **🛡️  Safety Pin** — A project-maintained `well_known_destinations` CIDR list (Anthropic, Cloudflare, GitHub, AWS CloudFront, Google, Fastly) that the response engine refuses to auto-block. Detections are still recorded, only the firewall action is suppressed. Fixes the class of bug where noisy threat intel occasionally flags CDN edges and Aegis then blocks the CDN.
+- **⏱️  Time-Series C2 Beacon Detection** — Full rewrite of the C2 beacon detector using **coefficient-of-variation analysis** on inter-arrival times. Replaces the count-based detector that false-positived on every HTTP/2 API client. Requires 4+ samples in a 300s window; CoV < 0.3 and interval in [30s, 900s] to fire. Per-(local_exe, remote_ip, port) state persisted to `beacon_history.json` across daemon restarts.
+- **🚫 Zero-Tolerance Threat Types** — New `zero_tolerance_threats` config. Default `["path_traversal", "sqli_attempt", "reverse_shell"]`. First confirmed offense → permanent ban, bypassing the strike counter. Whitelist + safety pin still win.
+- **🔍 Drift Detection** — Every housekeeping tick, Aegis diffs `block_list.json` against the live `AEGIS_BLOCK` iptables chain and logs discrepancies. Optional auto-reconciliation (`auto_reconcile_firewall = true`) with a safety threshold that refuses to act on large initial drift.
+- **🌐 ASN / Destination Reputation Enrichment** — New `src/util/asn_lookup.rs` module with `whois`-backed classification of IPs into `KnownInfrastructure` / `MajorCloudCustomer` / `HostingProvider` / `ResidentialIsp` / `Unknown`. On-disk cache at `~/.aegis/asn_cache.json` with 30-day TTL. Standalone API for v2.6.0; wires into the safety pin hot path in v2.6.1.
+- **📋 Honest Block Outcomes** — `ResponseEngine::block_ip()` now returns a typed `BlockOutcome` enum instead of unit-result-with-silent-skips. Response-action messages accurately describe what actually happened (blocked / safety-pinned / whitelisted / rate-limited / zero-tolerance permaban).
+
+**Upgrade path:** fully backwards-compatible. Every new config field has a sensible default, so existing `/etc/aegis/aegis.toml` files load unchanged and get the new features automatically. On APT/dpkg upgrade, `aegis config-upgrade` runs in postinst and merges new keys into your existing config with comments preserved.
+
+**Full migration notes and deployment checklist** → `docs/specs/2026-04-05-aegis-v2-design.md` §7
+**Emergency triage for existing iptables drift** → `docs/TRIAGE_PHASE_A0.md` + `scripts/unblock_infrastructure_fps.sh`
 
 ---
 
@@ -118,10 +137,12 @@ $ sudo aegis scan
   - [Rootkit Detection Module](#rootkit-detection-module)
   - [SSH Session Module](#ssh-session-module)
   - [CIS Benchmark Auditing](#cis-benchmark-auditing)
+- [What's new in v2.6.0](#whats-new-in-v260)
 - [Automated Response](#automated-response)
   - [Response Actions](#response-actions)
   - [Firewall Backends](#firewall-backends)
   - [Safety Mechanisms](#safety-mechanisms)
+    - Rate Limiting, IP Whitelist, **Well-Known Destinations Safety Pin (v2.6.0+)**, **Zero-Tolerance Threat Types (v2.6.0+)**, **Drift Detection (v2.6.0+)**
 - [Alerting](#alerting)
   - [Terminal Output](#terminal-output)
   - [JSON Log File](#json-log-file)
@@ -576,15 +597,27 @@ Skips: Connections to private IPs
 Includes: Remote IP, remote port, local port
 ```
 
-#### C2 Beacon Detection
+#### C2 Beacon Detection (time-series, v2.6.0+)
 
-Detects multiple simultaneous connections to the same remote IP:port combination. Command-and-control infrastructure often maintains persistent connections or rapid reconnects.
+Detects periodic outbound connections to the same `(local_exe, remote_ip, remote_port)` tuple via **coefficient-of-variation analysis** of inter-arrival times. Real C2 beacons establish, transmit, and disconnect on a regular cadence; the stddev-over-mean of those intervals is near zero (strict) or below 0.3 (jittered) — unlike random human/app traffic where it's typically >1.0.
+
+The v2.6.0 detector replaces the earlier count-based implementation that false-positived on any HTTP/2 API client (CloudFront, Anthropic, GitHub endpoints, etc.). It uses a diff against the previous scan's active-connection set to avoid counting persistent connections as beacons.
 
 ```
-Trigger: Connection count to same IP:port > c2_beacon_threshold (default: 10)
-Severity: Critical
-Skips: Private IPs
-Includes: Remote IP:port, connection count
+Trigger: CoV(inter_arrival_times) < c2_beacon_cov_threshold (default: 0.3)
+         AND sample_count >= c2_beacon_min_samples (default: 4)
+         AND mean interval in [min_interval_secs, max_interval_secs]
+Severity: Critical (auto-response defaults to "alert" in v2.6.0 while the
+          new detector soaks; flip to "block" in response.overrides once
+          you've validated precision for your environment)
+State: Persisted across daemon restarts in ~/.aegis/beacon_history.json
+Skips: Private IPs, persistent connections (seen in previous scan)
+Includes: Remote IP:port, local exe path, CoV, mean/stddev interval,
+          sample count, local IP:port, process name/pid/cmdline
+Safety net: Even if this detector misfires on a well-known infrastructure
+            IP, the v2.6.0 safety pin (response.well_known_destinations)
+            refuses to install a firewall rule for it — see
+            "Automated Response → Safety Mechanisms" below.
 ```
 
 #### Connection Rate Detection
@@ -618,9 +651,17 @@ syn_flood_threshold = 50
 port_scan_threshold = 15
 port_scan_window = 60
 known_outbound_ports = [80, 443, 53, 22, 25, 587]
-c2_beacon_threshold = 10
-c2_beacon_window = 300
 connection_rate_threshold = 100
+
+# Time-series C2 beacon detection (v2.6.0+)
+c2_beacon_window = 300                   # lookback window for CoV analysis (seconds)
+c2_beacon_min_samples = 4                # minimum new-connection samples before fire
+c2_beacon_cov_threshold = 0.3            # max σ/μ for "periodic enough" (jittered beacons ≈ 0.2-0.4)
+c2_beacon_min_interval_secs = 30.0       # reject faster-than-beacon traffic (keepalives, SSE)
+c2_beacon_max_interval_secs = 900.0      # reject slower-than-scan-cadence traffic
+c2_beacon_max_keys = 10000               # memory cap on tracked (local_exe, remote_ip, port) tuples
+c2_beacon_max_samples_per_key = 20       # per-tuple sample cap
+c2_beacon_threshold = 1                  # per-scan event cap per tuple (anti-flap; v2.6.0 repurposed)
 ```
 
 ---
@@ -1129,19 +1170,24 @@ Actions are resolved in priority order:
 [response.overrides]
 crypto_miner = "kill"         # Kill the miner process
 reverse_shell = "kill"        # Kill the shell immediately
-scanner_probe = "log"         # Scanners are noisy, just log
+scanner_probe = "block"       # Block automated scanners (24h)
 syn_flood = "block"           # Block flood source IPs
 brute_force = "block"         # Block brute-force IPs
 port_scan = "block"           # Block scanner IPs
-c2_beacon = "block"           # Block C2 destinations
+c2_beacon = "alert"           # v2.6.0: temporarily downgraded from "block"
+                              # while the new time-series detector soaks;
+                              # flip back to "block" after verifying precision.
+                              # The safety pin prevents infra false positives
+                              # regardless of this value.
 web_ddos = "block"            # Block DDoS source IPs
-sqli_attempt = "block"        # Block SQLi attackers
-path_traversal = "block"      # Block traversal attempts
+sqli_attempt = "block"        # Block SQLi attackers (zero-tolerance by default)
+path_traversal = "block"      # Block traversal attempts (zero-tolerance by default)
 file_modified = "alert"       # Alert on file changes
 file_added = "alert"          # Alert on new files
 file_deleted = "alert"        # Alert on deleted files
-suspicious_binary = "alert"   # Alert on suspicious binaries
+suspicious_binary = "kill"    # Kill binaries running from /tmp
 tor_exit = "log"              # Tor isn't inherently malicious
+honeypot_connection = "block" # Block anything touching the honeypot
 ```
 
 ### Firewall Backends
@@ -1200,9 +1246,9 @@ max_blocks_per_minute = 100    # Hard limit on block rate
 
 Uses a 60-second sliding window. When exceeded, new blocks are skipped with a warning.
 
-#### IP Whitelist
+#### IP Whitelist (user-curated)
 
-Critical infrastructure is never blocked:
+Critical infrastructure is never blocked, user decision is highest priority:
 
 ```toml
 whitelist = [
@@ -1215,6 +1261,71 @@ whitelist = [
 ```
 
 Add your own trusted IPs/ranges to prevent accidental lockouts.
+
+#### Well-Known Destinations Safety Pin (v2.6.0+)
+
+A project-shipped CIDR list of major CDN / cloud / code-host infrastructure that must never be auto-blocked — Anthropic API, Cloudflare, GitHub, AWS CloudFront, Google, Fastly. The response engine refuses to install a firewall rule when the candidate IP falls in this list, regardless of which detector fired. Events are still recorded in `threats.jsonl` at Low severity with a `safety_pin_reason` detail, so admins have full forensic visibility; only the automated firewall action is suppressed.
+
+```toml
+[response]
+# well_known_destinations has a sensible hardcoded default. Leave it unset
+# to use the shipped list, or override to add your own infrastructure CIDRs.
+# Set to [] to disable entirely (NOT recommended).
+#well_known_destinations = [
+#    "160.79.104.0/21",   # Anthropic API
+#    "104.16.0.0/12",      # Cloudflare
+#    "140.82.112.0/20",    # GitHub
+#    "13.224.0.0/14",      # AWS CloudFront
+#    # ... etc
+#]
+```
+
+**Why separate from `whitelist`?** Semantically different: `whitelist` is user-curated "never block this, period" (full bypass, no logging). `well_known_destinations` is project-maintained "don't auto-block this, but do still log the detection" (suppresses action only). A user who wants to force-block a Cloudflare IP can still use `aegis block <ip>` — the safety pin only affects automatic response.
+
+This fixes a class of false positive where noisy threat-intel feeds transiently flag CDN edge IPs (scanner traffic proxied through Cloudflare Workers, briefly-compromised CloudFront edges, etc.) and Aegis then firewall-blocks the CDN itself, breaking the operator's own traffic.
+
+#### Zero-Tolerance Threat Types (v2.6.0+)
+
+Some threat types are severe enough that a single confirmed hit justifies a permanent ban, bypassing the strike counter. The default list is conservative:
+
+```toml
+[response]
+zero_tolerance_threats = [
+    "path_traversal",    # /../../etc/passwd, %2e%2e, etc.
+    "sqli_attempt",      # UNION SELECT, OR 1=1, etc.
+    "reverse_shell",     # bash -i >& /dev/tcp/...
+]
+```
+
+When a threat in this list is detected, the response engine:
+1. Records a strike for history completeness
+2. Immediately calls `state.mark_escalated(ip)`
+3. Sets `expires_at = None` (permanent ban)
+4. Produces a `BlockedPermanentZeroTolerance` outcome distinct from normal blocks
+
+**Not included by default**: `web_ddos`, `brute_force`, `scanner_probe` — these have higher false-positive rates where a traffic spike could permaban legitimate clients. Add them manually if you want more aggressive policy. Whitelist and safety pin both still take priority over zero-tolerance (user decision and project-shipped infra protection win).
+
+#### Drift Detection & Reconciliation (v2.6.0+)
+
+Every housekeeping tick (5 min), Aegis diffs `~/.aegis/block_list.json` against the live `AEGIS_BLOCK` firewall chain and logs any drift. Typical causes: daemon restart between reloads, manual `iptables -F AEGIS_BLOCK`, `apt remove aegis` followed by reinstall, or older Aegis versions that added rules without persisting.
+
+```toml
+[response]
+auto_reconcile_firewall = false    # Warn-only by default; flip to true after
+                                    # verifying drift reports look correct
+reconcile_interval_minutes = 15    # (reserved for future dedicated scheduling)
+```
+
+When `auto_reconcile_firewall = true`:
+- **Missing firewall rules** (IPs in block_list.json but not in the live chain) are re-added
+- **Orphaned firewall rules** (IPs in the chain but not in block_list.json) are removed
+- A **safety threshold** (100 entries) refuses auto-repair if the drift is huge — on a first run against a chain with hundreds of stale historical rules, auto-repair would be catastrophic. Clean up manually first (see `docs/TRIAGE_PHASE_A0.md` and `scripts/unblock_infrastructure_fps.sh` for the pattern), then enable auto-reconcile.
+
+Drift reports are emitted at `warn` level with `missing`, `orphaned`, and `total_drift` counters so you can graph them.
+
+#### Honest Block Outcomes (v2.6.0+)
+
+Internal change but operator-visible: `ResponseEngine::block_ip()` now returns a typed `BlockOutcome` enum (`Blocked`, `AlreadyBlocked`, `Whitelisted`, `SafetyPinInfrastructure`, `RateLimited`, `BlockedPermanentZeroTolerance`) instead of unit-result-with-silent-skips. This means the response-action log message for every threat accurately describes what actually happened, instead of cheerfully saying "Blocked IP X" when the IP was actually whitelisted / rate-limited / safety-pinned.
 
 #### Block Expiry
 
@@ -1474,9 +1585,16 @@ syn_flood_threshold = 50
 port_scan_threshold = 15
 port_scan_window = 60
 known_outbound_ports = [80, 443, 53, 22, 25, 587]
-c2_beacon_threshold = 10
-c2_beacon_window = 300
 connection_rate_threshold = 100
+# v2.6.0 time-series C2 beacon detector
+c2_beacon_window = 300
+c2_beacon_min_samples = 4
+c2_beacon_cov_threshold = 0.3
+c2_beacon_min_interval_secs = 30.0
+c2_beacon_max_interval_secs = 900.0
+c2_beacon_max_keys = 10000
+c2_beacon_max_samples_per_key = 20
+c2_beacon_threshold = 1        # v2.6.0: repurposed as per-scan event cap
 
 [process]
 enabled = true
@@ -1577,20 +1695,37 @@ firewall_backend = "iptables"
 whitelist = ["127.0.0.0/8", "::1/128", "10.0.0.0/8",
              "172.16.0.0/12", "192.168.0.0/16"]
 
+# v2.6.0 — leave well_known_destinations unset to use the shipped default
+# (Anthropic, Cloudflare, GitHub, AWS CloudFront, Google, Fastly).
+# well_known_destinations = []
+
+# v2.6.0 — first-offense permanent ban for high-confidence threat types.
+zero_tolerance_threats = ["path_traversal", "sqli_attempt", "reverse_shell"]
+
+# v2.6.0 — drift detection between block_list.json and AEGIS_BLOCK chain.
+auto_reconcile_firewall = false
+reconcile_interval_minutes = 15
+
+# v2.6.0 — repeat offender auto-escalation (unchanged since v2.5.0).
+repeat_offender_threshold = 3
+repeat_offender_window = "30d"
+max_strike_records = 10000
+
 [response.overrides]
 crypto_miner = "kill"
 reverse_shell = "kill"
-scanner_probe = "log"
+scanner_probe = "block"
 syn_flood = "block"
 brute_force = "block"
 port_scan = "block"
-c2_beacon = "block"
+c2_beacon = "alert"        # v2.6.0: downgraded from "block" — see safety pin section
 web_ddos = "block"
 sqli_attempt = "block"
 path_traversal = "block"
 file_modified = "alert"
-suspicious_binary = "alert"
+suspicious_binary = "kill"
 tor_exit = "log"
+honeypot_connection = "block"
 
 [alerting]
 terminal = true
@@ -1639,7 +1774,7 @@ Complete list of all threat types Aegis can detect:
 | SYN Flood | High | network | block | TCP SYN flood detected |
 | Port Scan | Medium | network | block | Port scanning from single IP |
 | Suspicious Connection | Medium | network | alert | Outbound connection on unusual port |
-| C2 Beacon | Critical | network | block | Repeated connections to same remote host |
+| C2 Beacon | Critical | network | alert¹ | Periodic outbound connection pattern (v2.6.0 time-series CoV detector) |
 | Crypto Miner | High | process | kill | Cryptocurrency mining process |
 | Reverse Shell | Critical | process | kill | Shell with network socket (active compromise) |
 | Suspicious Binary | High | process | alert | Binary running from /tmp or /dev/shm |
@@ -1664,6 +1799,15 @@ Complete list of all threat types Aegis can detect:
 | Cert Expiring Soon | Medium | cert | alert | TLS certificate approaching expiry |
 | Kernel Module Loaded | High | anomaly | alert | New kernel module detected (rootkit indicator) |
 | New Outbound Destination | Medium | network | alert | Connection to previously unseen destination |
+
+¹ **C2 Beacon default action**: temporarily downgraded from `block` to `alert` in v2.6.0 while the new time-series detector soaks. The action can be flipped back by setting `c2_beacon = "block"` in `[response.overrides]`. Regardless of the action, Bucket A's safety pin prevents auto-blocking of IPs in well-known CDN / cloud / code-host CIDRs — so even with `"block"`, you're protected from the class of false positive that prompted the v2.6.0 release.
+
+Add `storage/` entries (v2.6.0+):
+
+| File | Purpose |
+|------|---------|
+| `asn_cache.json` | Cached ASN / `whois` lookups for destination reputation enrichment (30-day TTL, atomic writes) |
+| `beacon_history.json` | Per-(local_exe, remote_ip, port) inter-arrival timestamps for the time-series C2 detector. Persisted across daemon restarts so short-cycle beacons aren't forgotten. |
 
 ---
 

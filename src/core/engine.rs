@@ -549,6 +549,33 @@ impl Engine {
                                 warn!(error = %e, "Failed to persist block list after expiry");
                             }
                         }
+
+                        // v2.6.0 Bucket D: drift detection between the persisted
+                        // block list and the live AEGIS_BLOCK firewall chain.
+                        // Runs every 5 min (every housekeeping tick). The
+                        // `reconcile_interval_minutes` config field is reserved
+                        // for future dedicated scheduling; for now, 5 min gives
+                        // us fast detection of manual tampering without much
+                        // overhead (iptables -S subprocess completes in <100ms
+                        // even for chains with thousands of rules).
+                        let report = self.response_engine.reconcile_firewall_state(&mut state);
+                        if !report.is_in_sync() {
+                            warn!(
+                                persisted = report.persisted_count,
+                                firewall = report.firewall_count,
+                                missing = report.missing_from_firewall.len(),
+                                orphaned = report.orphaned_in_firewall.len(),
+                                auto_reconciled = report.auto_reconciled,
+                                "Housekeeping: firewall drift detected"
+                            );
+                            // If auto-reconcile fixed missing rules, persist the
+                            // block list so restart is consistent.
+                            if report.auto_reconciled {
+                                if let Err(e) = self.storage.save_block_list(&state.blocked_ips) {
+                                    warn!(error = %e, "Failed to persist block list after reconcile");
+                                }
+                            }
+                        }
                     }
                     // Prune expired blocks from disk
                     if let Err(e) = self.storage.prune_expired_blocks() {

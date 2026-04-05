@@ -73,6 +73,148 @@ fn default_max_strike_records() -> usize {
     10_000
 }
 
+/// Default list of CIDR ranges for major infrastructure providers that Aegis
+/// should never auto-block. These are user-facing CDN/edge/cloud-service IPs
+/// where a "threat" hit is almost always a false positive caused by an attacker
+/// routing through the CDN (and the real block should happen at the origin,
+/// not at the shared edge).
+///
+/// The list covers the most common sources of false positives we've observed:
+/// Anthropic API, Cloudflare, GitHub, AWS CloudFront, Google infrastructure,
+/// and Fastly CDN. Users can extend or override this list via the
+/// `[response] well_known_destinations` config key.
+///
+/// See docs/specs/2026-04-05-aegis-v2-design.md §1.2 for the decision rationale
+/// and §2 for how the safety pin uses this list.
+fn default_well_known_destinations() -> Vec<String> {
+    vec![
+        // Anthropic API (claude.ai, api.anthropic.com) — ARIN AP-2440
+        "160.79.104.0/21".into(),
+        // Cloudflare (https://www.cloudflare.com/ips-v4/)
+        "103.21.244.0/22".into(),
+        "103.22.200.0/22".into(),
+        "103.31.4.0/22".into(),
+        // 104.16.0.0/12 covers Cloudflare's full 104.16-104.31 allocation.
+        // Broader than Cloudflare's published /13 list because whois data
+        // shows 104.28.x.x is also CLOUDFLARENET (acquired later).
+        "104.16.0.0/12".into(),
+        "108.162.192.0/18".into(),
+        "131.0.72.0/22".into(),
+        "141.101.64.0/18".into(),
+        "162.158.0.0/15".into(),
+        "172.64.0.0/13".into(),
+        "173.245.48.0/20".into(),
+        "188.114.96.0/20".into(),
+        "190.93.240.0/20".into(),
+        "197.234.240.0/22".into(),
+        "198.41.128.0/17".into(),
+        // GitHub (https://api.github.com/meta — web, api, git, pages, importer)
+        "140.82.112.0/20".into(),
+        "143.55.64.0/20".into(),
+        "185.199.108.0/22".into(),
+        "192.30.252.0/22".into(),
+        // AWS CloudFront edge locations
+        // (subset of https://ip-ranges.amazonaws.com/ip-ranges.json where service=CLOUDFRONT)
+        "13.32.0.0/15".into(),
+        "13.35.0.0/16".into(),
+        "13.224.0.0/14".into(),
+        "18.160.0.0/15".into(),
+        "18.172.0.0/15".into(),
+        "18.244.0.0/15".into(),
+        "52.46.0.0/18".into(),
+        "52.84.0.0/15".into(),
+        "54.182.0.0/16".into(),
+        "54.192.0.0/16".into(),
+        "54.230.0.0/16".into(),
+        "54.239.128.0/18".into(),
+        "54.239.192.0/19".into(),
+        "54.240.128.0/18".into(),
+        "64.252.64.0/18".into(),
+        "70.132.0.0/18".into(),
+        "99.84.0.0/16".into(),
+        "99.86.0.0/16".into(),
+        "108.138.0.0/15".into(),
+        "108.156.0.0/14".into(),
+        "143.204.0.0/16".into(),
+        "205.251.192.0/19".into(),
+        "216.137.32.0/19".into(),
+        // Google / Googlebot / GCP edge (subset of https://www.gstatic.com/ipranges/goog.json)
+        "8.8.4.0/24".into(),
+        "8.8.8.0/24".into(),
+        "34.64.0.0/10".into(),
+        "34.128.0.0/10".into(),
+        "35.184.0.0/13".into(),
+        "35.192.0.0/14".into(),
+        "35.196.0.0/15".into(),
+        "35.198.0.0/16".into(),
+        "35.199.0.0/17".into(),
+        "64.233.160.0/19".into(),
+        "66.102.0.0/20".into(),
+        "66.249.64.0/19".into(),
+        "72.14.192.0/18".into(),
+        "74.125.0.0/16".into(),
+        "108.177.0.0/17".into(),
+        "130.211.0.0/16".into(),
+        "142.250.0.0/15".into(),
+        "172.217.0.0/16".into(),
+        "173.194.0.0/16".into(),
+        "209.85.128.0/17".into(),
+        "216.58.192.0/19".into(),
+        "216.239.32.0/19".into(),
+        // Fastly (https://api.fastly.com/public-ip-list)
+        "23.235.32.0/20".into(),
+        "43.249.72.0/22".into(),
+        "103.244.50.0/24".into(),
+        "103.245.222.0/23".into(),
+        "103.245.224.0/24".into(),
+        "104.156.80.0/20".into(),
+        "140.248.64.0/18".into(),
+        "140.248.128.0/17".into(),
+        "146.75.0.0/17".into(),
+        "151.101.0.0/16".into(),
+        "157.52.64.0/18".into(),
+        "167.82.0.0/17".into(),
+        "172.111.64.0/18".into(),
+        "185.31.16.0/22".into(),
+        "199.27.72.0/21".into(),
+        "199.232.0.0/16".into(),
+    ]
+}
+
+/// Default list of threat type config keys that should trigger an immediate
+/// permanent ban (first-offense, no strike counter). These are threat types
+/// where a single confirmed hit is already strong evidence of hostile intent
+/// and where the false-positive rate is low enough to justify permaban.
+///
+/// Conservative default — does NOT include `web_ddos`, `brute_force`, or
+/// `scanner_probe` because those have higher FP rates (a single traffic
+/// spike from a legitimate client could trigger permaban). Users can add
+/// them via config if they want more aggressive policy.
+///
+/// See docs/specs/2026-04-05-aegis-v2-design.md §3 for design rationale.
+fn default_zero_tolerance_threats() -> Vec<String> {
+    vec![
+        "path_traversal".into(),
+        "sqli_attempt".into(),
+        "reverse_shell".into(),
+    ]
+}
+
+/// Default for `response.auto_reconcile_firewall`. Defaults to false
+/// (warn-only) because auto-reconciliation modifies kernel firewall state
+/// and is a high-blast-radius operation. Users opt in after verifying the
+/// drift reports look correct.
+fn default_auto_reconcile_firewall() -> bool {
+    false
+}
+
+/// Default interval (minutes) for the drift-detection reconciliation task.
+/// 15 minutes is frequent enough to catch manual tampering quickly without
+/// generating excessive iptables-list subprocess overhead.
+fn default_reconcile_interval_minutes() -> u64 {
+    15
+}
+
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
@@ -104,12 +246,68 @@ pub struct NetworkConfig {
     pub port_scan_window: u64,
     /// Ports considered normal for outbound traffic.
     pub known_outbound_ports: Vec<u16>,
-    /// Minimum beacons in window to flag as C2.
+    /// Maximum beacon events per scan cycle (v2.6.0: repurposed). In v2.5.0
+    /// and earlier this was the raw parallel-socket count threshold. In
+    /// v2.6.0+ the time-series detector uses `c2_beacon_cov_threshold` and
+    /// `c2_beacon_min_samples` instead; this field becomes the per-scan
+    /// event cap (anti-flap). Default 1 = at most one C2 beacon event per
+    /// (local_exe, remote_ip, remote_port) per scan tick.
     pub c2_beacon_threshold: u32,
-    /// Window in seconds for C2 beacon detection.
+    /// Window in seconds for C2 beacon time-series analysis.
+    /// v2.6.0: now actually used by the time-series detector (was dead code
+    /// in v2.5.0). Samples older than this window are pruned from the
+    /// beacon history before CoV computation.
     pub c2_beacon_window: u64,
     /// Connections per minute from a single IP to trigger rate alert.
     pub connection_rate_threshold: u32,
+    /// v2.6.0 Bucket E: minimum samples in the window before the CoV
+    /// beacon detector fires. Lower = more sensitive, more false positives.
+    /// Default 4 is the lowest value with meaningful statistics.
+    #[serde(default = "default_c2_beacon_min_samples")]
+    pub c2_beacon_min_samples: usize,
+    /// v2.6.0 Bucket E: coefficient of variation threshold below which
+    /// inter-arrival timing is considered "periodic enough" to be a beacon.
+    /// Strict beacons have CoV ≈ 0, jittered beacons ≈ 0.2–0.4, random
+    /// traffic ≈ 1.0. Default 0.3 catches jittered beacons without
+    /// false-positiving on moderately regular human browsing patterns.
+    #[serde(default = "default_c2_beacon_cov_threshold")]
+    pub c2_beacon_cov_threshold: f64,
+    /// v2.6.0 Bucket E: minimum mean inter-arrival interval (seconds) for
+    /// a beacon candidate. Shorter than this is probably application
+    /// traffic (WebSocket keepalives, SSE reconnects), not C2.
+    #[serde(default = "default_c2_beacon_min_interval_secs")]
+    pub c2_beacon_min_interval_secs: f64,
+    /// v2.6.0 Bucket E: maximum mean inter-arrival interval (seconds).
+    /// Longer than this and the daemon scan cadence (60s) would likely
+    /// miss samples anyway.
+    #[serde(default = "default_c2_beacon_max_interval_secs")]
+    pub c2_beacon_max_interval_secs: f64,
+    /// v2.6.0 Bucket E: max distinct (local_exe, remote_ip, remote_port)
+    /// tuples tracked in beacon history. Memory bound.
+    #[serde(default = "default_c2_beacon_max_keys")]
+    pub c2_beacon_max_keys: usize,
+    /// v2.6.0 Bucket E: max samples retained per key.
+    #[serde(default = "default_c2_beacon_max_samples_per_key")]
+    pub c2_beacon_max_samples_per_key: usize,
+}
+
+fn default_c2_beacon_min_samples() -> usize {
+    4
+}
+fn default_c2_beacon_cov_threshold() -> f64 {
+    0.3
+}
+fn default_c2_beacon_min_interval_secs() -> f64 {
+    30.0
+}
+fn default_c2_beacon_max_interval_secs() -> f64 {
+    900.0
+}
+fn default_c2_beacon_max_keys() -> usize {
+    10_000
+}
+fn default_c2_beacon_max_samples_per_key() -> usize {
+    20
 }
 
 impl Default for NetworkConfig {
@@ -127,9 +325,18 @@ impl Default for NetworkConfig {
                 853,  // DNS over TLS
                 3478, 3479, 5349, // STUN/TURN (WebRTC)
             ],
-            c2_beacon_threshold: 10,
+            // v2.6.0: repurposed as per-scan event cap (was parallel-socket
+            // count in v2.5.0). Default 1 = at most 1 beacon event per key
+            // per scan tick.
+            c2_beacon_threshold: 1,
             c2_beacon_window: 300,
             connection_rate_threshold: 100,
+            c2_beacon_min_samples: default_c2_beacon_min_samples(),
+            c2_beacon_cov_threshold: default_c2_beacon_cov_threshold(),
+            c2_beacon_min_interval_secs: default_c2_beacon_min_interval_secs(),
+            c2_beacon_max_interval_secs: default_c2_beacon_max_interval_secs(),
+            c2_beacon_max_keys: default_c2_beacon_max_keys(),
+            c2_beacon_max_samples_per_key: default_c2_beacon_max_samples_per_key(),
         }
     }
 }
@@ -446,6 +653,50 @@ pub struct ResponseConfig {
     /// Maximum number of strike records to keep in memory.
     #[serde(default = "default_max_strike_records")]
     pub max_strike_records: usize,
+    /// Bucket A safety pin: CIDR ranges for well-known infrastructure
+    /// providers (CDNs, major clouds, code hosts) that must NEVER be
+    /// auto-blocked even if a detection rule fires against them. Events are
+    /// still logged at Low severity with a `safety_pin_reason` detail for
+    /// admin visibility, but the firewall rule is not installed.
+    ///
+    /// Unlike `whitelist`, this list is shipped with Aegis and updated by
+    /// the project on each release. Users can add their own entries but
+    /// don't need to maintain it from scratch.
+    ///
+    /// Backwards-compat: if this field is missing from an existing config
+    /// file, the hardcoded default list is used. Set to `[]` to disable
+    /// the safety pin entirely (not recommended — you'll lose protection
+    /// against Aegis accidentally blocking Anthropic/GitHub/Cloudflare/etc).
+    #[serde(default = "default_well_known_destinations")]
+    pub well_known_destinations: Vec<String>,
+    /// Bucket B: threat type config keys that should trigger a permanent
+    /// ban on first offense, bypassing the strike counter. See
+    /// `default_zero_tolerance_threats` for rationale behind the default list.
+    ///
+    /// Interaction with repeat_offender: zero-tolerance short-circuits the
+    /// strike counter; a single hit escalates to permanent ban regardless
+    /// of history. `repeat_offender_threshold` continues to handle the
+    /// "N strikes across time" case for non-zero-tolerance types.
+    ///
+    /// Interaction with safety pin: well_known_destinations still wins over
+    /// zero_tolerance_threats (we never auto-block infra, even for zero-tolerance
+    /// types).
+    #[serde(default = "default_zero_tolerance_threats")]
+    pub zero_tolerance_threats: Vec<String>,
+    /// Bucket D: if true, the daemon housekeeping loop will not just warn
+    /// about drift between block_list.json and the live AEGIS_BLOCK chain,
+    /// it will actively reconcile them (re-add missing rules, optionally
+    /// remove orphaned rules).
+    ///
+    /// Defaults to false (warn-only) because reconciliation modifies kernel
+    /// firewall state. Flip to true only after verifying drift reports look
+    /// correct for a few cycles.
+    #[serde(default = "default_auto_reconcile_firewall")]
+    pub auto_reconcile_firewall: bool,
+    /// Bucket D: how often (in minutes) to run the drift-detection
+    /// reconciliation task. Default 15 minutes.
+    #[serde(default = "default_reconcile_interval_minutes")]
+    pub reconcile_interval_minutes: u64,
 }
 
 impl Default for ResponseConfig {
@@ -457,7 +708,14 @@ impl Default for ResponseConfig {
         overrides.insert("syn_flood".into(), "block".into());
         overrides.insert("brute_force".into(), "block".into());
         overrides.insert("port_scan".into(), "block".into());
-        overrides.insert("c2_beacon".into(), "block".into());
+        // TEMPORARY downgrade to "alert" until v2.6.0's time-series beacon
+        // detector (Bucket E) has soaked in production. The legacy count-based
+        // detector produces too many false positives against legitimate
+        // high-throughput API clients; blocking on it causes the exact
+        // problem documented in docs/TRIAGE_PHASE_A0.md (CloudFront/GitHub
+        // getting firewalled). Flip back to "block" after verifying the new
+        // detector's precision.
+        overrides.insert("c2_beacon".into(), "alert".into());
         overrides.insert("web_ddos".into(), "block".into());
         overrides.insert("sqli_attempt".into(), "block".into());
         overrides.insert("path_traversal".into(), "block".into());
@@ -486,6 +744,10 @@ impl Default for ResponseConfig {
             repeat_offender_threshold: default_repeat_offender_threshold(),
             repeat_offender_window: default_repeat_offender_window(),
             max_strike_records: default_max_strike_records(),
+            well_known_destinations: default_well_known_destinations(),
+            zero_tolerance_threats: default_zero_tolerance_threats(),
+            auto_reconcile_firewall: default_auto_reconcile_firewall(),
+            reconcile_interval_minutes: default_reconcile_interval_minutes(),
         }
     }
 }

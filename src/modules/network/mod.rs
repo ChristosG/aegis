@@ -1,6 +1,9 @@
+mod beacon_history;
+
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -11,6 +14,8 @@ use crate::core::threat::{ThreatEvent, ThreatType};
 use crate::modules::ScanModule;
 use crate::util::ip::is_private;
 use crate::util::proc_parse::{parse_tcp_line, tcp_state};
+
+use beacon_history::{exe_path_for_pid, history_file_path, BeaconHistory, BeaconKey};
 
 /// A parsed TCP connection entry from /proc/net/tcp{,6}.
 #[derive(Debug, Clone)]
@@ -26,8 +31,23 @@ struct TcpConnection {
 
 /// Network scanning module: detects SYN floods, port scans, suspicious outbound
 /// connections, and C2 beacons by analyzing /proc/net/tcp and related data.
+///
+/// v2.6.0: now holds per-module beacon history state for the time-series
+/// detector (Bucket E). The history is loaded from disk on module
+/// construction and persisted at scan time, so short-cycle beacons aren't
+/// lost between scans or across daemon restarts.
 pub struct NetworkModule {
     config: NetworkConfig,
+    /// v2.6.0 Bucket E: data directory for beacon_history.json persistence.
+    data_dir: PathBuf,
+    /// v2.6.0 Bucket E: per-key beacon timing history. Wrapped in Mutex
+    /// because scan() takes &self but needs to mutate the history.
+    beacon_history: Mutex<BeaconHistory>,
+    /// v2.6.0 Bucket E: set of BeaconKeys observed in the previous scan
+    /// cycle. Used to compute the diff (NEW connections since last scan)
+    /// that feeds into beacon_history. Without this, we'd mistake
+    /// persistent connections for periodic beacons.
+    last_seen_keys: Mutex<HashSet<BeaconKey>>,
 }
 
 /// Look up the exe path and full command line for a given PID.
@@ -87,7 +107,31 @@ fn port_to_service(port: u16) -> Option<&'static str> {
 
 impl NetworkModule {
     pub fn new(config: NetworkConfig) -> Self {
-        Self { config }
+        // Default to ~/.aegis if no explicit data_dir given at construction
+        // time. The module factory (modules/mod.rs) calls new() without a
+        // data_dir, consistent with the pre-v2.6.0 API. Beacon history
+        // persistence is still best-effort — if the path isn't writable,
+        // the detector still works (it just loses history across restarts).
+        let data_dir = crate::config::defaults::resolve_path("~/.aegis");
+        Self::new_with_data_dir(config, data_dir)
+    }
+
+    /// v2.6.0: construct a NetworkModule with an explicit data_dir. Used
+    /// by tests and by future callers that want full control over where
+    /// beacon history is persisted.
+    pub fn new_with_data_dir(config: NetworkConfig, data_dir: PathBuf) -> Self {
+        let beacon_history = BeaconHistory::load_or_default(
+            &history_file_path(&data_dir),
+            config.c2_beacon_max_keys,
+            config.c2_beacon_max_samples_per_key,
+            config.c2_beacon_window,
+        );
+        Self {
+            config,
+            data_dir,
+            beacon_history: Mutex::new(beacon_history),
+            last_seen_keys: Mutex::new(HashSet::new()),
+        }
     }
 
     /// Read and parse all TCP connections from /proc/net/tcp and /proc/net/tcp6.
@@ -370,8 +414,44 @@ impl NetworkModule {
         threats
     }
 
-    /// Detect potential C2 beacon patterns by looking for multiple connections
-    /// to the same remote IP:port.
+    /// v2.6.0 Bucket E: Time-series C2 beacon detection via coefficient-of-
+    /// variation analysis of inter-arrival times.
+    ///
+    /// REPLACES the v2.5.0 count-based detector, which produced massive
+    /// false positives against any HTTP/2 client (see
+    /// docs/TRIAGE_PHASE_A0.md for the real-world impact).
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Build the current set of BeaconKey(local_exe, remote_ip, remote_port)
+    ///    for all ESTABLISHED outbound connections to non-private IPs.
+    /// 2. Compute the diff: `new_keys = current - last_seen` — these are
+    ///    connections that weren't here last scan, which is what we want to
+    ///    time-stamp as a "beacon initiation" sample. Persistent connections
+    ///    don't get counted on every scan, which is what distinguishes this
+    ///    detector from the legacy count-based one.
+    /// 3. Record samples for `new_keys` in `beacon_history` with the current
+    ///    timestamp.
+    /// 4. Prune stale history entries outside the window.
+    /// 5. For every key in the history, compute stats and emit a beacon
+    ///    event if the CoV is below threshold and the interval is in range.
+    /// 6. Save history to disk (best-effort).
+    ///
+    /// # Why diff against last_seen?
+    ///
+    /// Without the diff, every persistent connection would get a sample
+    /// recorded on every scan (every 60s), producing a perfectly periodic
+    /// series with CoV ≈ 0 — a false positive on literally every
+    /// long-lived TCP connection. The diff means we only capture *new
+    /// connection establishments*, which is what real beacons look like.
+    ///
+    /// # Interaction with Bucket A's safety pin
+    ///
+    /// If the new detector DOES fire on a well-known-infrastructure IP
+    /// (some CDN health-check that genuinely beacons every 60s), Bucket A's
+    /// safety pin in the response engine will refuse to install a firewall
+    /// rule for it — so false positives here are a dashboard-noise issue,
+    /// not a service-outage issue.
     fn detect_c2_beacon(
         &self,
         connections: &[TcpConnection],
@@ -379,44 +459,139 @@ impl NetworkModule {
     ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
-        // Count ESTABLISHED connections to each remote IP:port pair, with a representative inode
-        let mut endpoint_counts: HashMap<(IpAddr, u16), (u32, u64)> = HashMap::new();
+        // -------------------------------------------------------------------
+        // Step 1: build current BeaconKey set from ESTABLISHED outbound conns.
+        // For each key, remember ONE representative (inode, local_ip, local_port)
+        // so we can enrich the eventual threat event with local-endpoint info
+        // (this is the Bug #1 fix from Bucket A, subsumed into Bucket E).
+        // -------------------------------------------------------------------
+        struct KeyMeta {
+            local_ip: IpAddr,
+            local_port: u16,
+            inode: u64,
+        }
+        let mut current: HashMap<BeaconKey, KeyMeta> = HashMap::new();
 
         for conn in connections {
             if conn.state != tcp_state::ESTABLISHED {
                 continue;
             }
-            // Skip private/loopback IPs
             if is_private(&conn.remote_ip) {
                 continue;
             }
 
-            let entry = endpoint_counts
-                .entry((conn.remote_ip, conn.remote_port))
-                .or_insert((0, 0));
-            entry.0 += 1;
-            // Store the inode from the first connection as the representative
-            if entry.1 == 0 && conn.inode != 0 {
-                entry.1 = conn.inode;
-            }
+            // Resolve local exe path for this connection's inode. If we can't,
+            // fall back to "unknown:<inode>" so different unknown sockets
+            // don't collapse into one key.
+            let local_exe = if conn.inode != 0 {
+                match inode_map.get(&conn.inode) {
+                    Some((pid, _name)) => exe_path_for_pid(*pid),
+                    None => format!("unknown:inode-{}", conn.inode),
+                }
+            } else {
+                "unknown:no-inode".to_string()
+            };
+
+            let key = BeaconKey {
+                local_exe,
+                remote_ip: conn.remote_ip,
+                remote_port: conn.remote_port,
+            };
+            current.entry(key).or_insert(KeyMeta {
+                local_ip: conn.local_ip,
+                local_port: conn.local_port,
+                inode: conn.inode,
+            });
         }
 
-        for ((remote_ip, remote_port), (count, repr_inode)) in &endpoint_counts {
-            if *count > self.config.c2_beacon_threshold {
-                let description = format!(
-                    "Potential C2 beacon: {} connections to {}:{} (threshold: {})",
-                    count, remote_ip, remote_port, self.config.c2_beacon_threshold
+        // -------------------------------------------------------------------
+        // Step 2: diff against last_seen to find NEW connections.
+        // -------------------------------------------------------------------
+        let current_keys: HashSet<BeaconKey> = current.keys().cloned().collect();
+        let new_keys: Vec<BeaconKey> = {
+            let last_seen = self.last_seen_keys.lock().unwrap();
+            current_keys
+                .iter()
+                .filter(|k| !last_seen.contains(*k))
+                .cloned()
+                .collect()
+        };
+
+        // -------------------------------------------------------------------
+        // Step 3-4: record samples for new keys, prune stale entries.
+        // -------------------------------------------------------------------
+        {
+            let mut history = self.beacon_history.lock().unwrap();
+            for key in &new_keys {
+                history.record_sample(key.clone());
+            }
+            history.prune_stale();
+        }
+
+        // -------------------------------------------------------------------
+        // Step 5: analyze every key in history and emit beacon events.
+        // Iterate with a clone of the keys to release the lock before
+        // building events (which may allocate and is slower).
+        // -------------------------------------------------------------------
+        let candidates: Vec<(BeaconKey, beacon_history::BeaconStats)> = {
+            let history = self.beacon_history.lock().unwrap();
+            history
+                .keys()
+                .filter_map(|k| history.analyze(k).map(|s| (k.clone(), s)))
+                .collect()
+        };
+
+        for (key, stats) in candidates {
+            if !stats.is_beacon(
+                self.config.c2_beacon_cov_threshold,
+                self.config.c2_beacon_min_samples,
+                self.config.c2_beacon_min_interval_secs,
+                self.config.c2_beacon_max_interval_secs,
+            ) {
+                continue;
+            }
+
+            let description = format!(
+                "C2 beacon (time-series): {} sample(s) to {}:{} from '{}' with CoV {:.3} \
+                 (mean {:.1}s, stddev {:.1}s)",
+                stats.sample_count,
+                key.remote_ip,
+                key.remote_port,
+                key.local_exe,
+                stats.cov,
+                stats.mean_interval_secs,
+                stats.stddev_interval_secs,
+            );
+
+            let mut event = ThreatEvent::new(ThreatType::C2Beacon, "network", &description)
+                .with_source_ip(key.remote_ip)
+                .with_target(format!("{}:{}", key.remote_ip, key.remote_port))
+                // Bucket A bug-fix: record local endpoint explicitly. The old
+                // detector stored remote_ip in both source_ip AND target,
+                // leaving operators with no way to see which local process
+                // was talking.
+                .with_detail("local_exe", key.local_exe.clone())
+                .with_detail("sample_count", stats.sample_count.to_string())
+                .with_detail("cov", format!("{:.4}", stats.cov))
+                .with_detail("mean_interval_secs", format!("{:.2}", stats.mean_interval_secs))
+                .with_detail(
+                    "stddev_interval_secs",
+                    format!("{:.2}", stats.stddev_interval_secs),
+                )
+                .with_detail("window_secs", format!("{:.0}", stats.window_secs))
+                .with_detail(
+                    "cov_threshold",
+                    format!("{:.2}", self.config.c2_beacon_cov_threshold),
                 );
 
-                let mut event = ThreatEvent::new(ThreatType::C2Beacon, "network", &description)
-                    .with_source_ip(*remote_ip)
-                    .with_target(format!("{}:{}", remote_ip, remote_port))
-                    .with_detail("connection_count", count.to_string())
-                    .with_detail("threshold", self.config.c2_beacon_threshold.to_string());
-
-                // Enrich with process details from the representative inode
-                if *repr_inode != 0 {
-                    if let Some((pid, name)) = inode_map.get(repr_inode) {
+            // If the key is currently active, add the current local endpoint
+            // + process info from the inode_map.
+            if let Some(meta) = current.get(&key) {
+                event = event
+                    .with_detail("local_ip", meta.local_ip.to_string())
+                    .with_detail("local_port", meta.local_port.to_string());
+                if meta.inode != 0 {
+                    if let Some((pid, name)) = inode_map.get(&meta.inode) {
                         let (exe, cmdline) = get_process_details(*pid);
                         event = event
                             .with_detail("process_name", name.clone())
@@ -430,16 +605,31 @@ impl NetworkModule {
                         }
                     }
                 }
-
-                warn!(
-                    remote_ip = %remote_ip,
-                    remote_port = remote_port,
-                    connection_count = count,
-                    "Potential C2 beacon detected"
-                );
-
-                threats.push(event);
             }
+
+            warn!(
+                remote_ip = %key.remote_ip,
+                remote_port = key.remote_port,
+                local_exe = %key.local_exe,
+                cov = stats.cov,
+                mean_interval_secs = stats.mean_interval_secs,
+                sample_count = stats.sample_count,
+                "C2 beacon detected (time-series CoV analysis)"
+            );
+
+            threats.push(event);
+        }
+
+        // -------------------------------------------------------------------
+        // Step 6: update last_seen and persist history.
+        // -------------------------------------------------------------------
+        {
+            let mut last_seen = self.last_seen_keys.lock().unwrap();
+            *last_seen = current_keys;
+        }
+        {
+            let history = self.beacon_history.lock().unwrap();
+            history.save(&history_file_path(&self.data_dir));
         }
 
         threats
