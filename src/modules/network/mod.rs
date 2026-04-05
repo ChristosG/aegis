@@ -573,7 +573,10 @@ impl NetworkModule {
                 .with_detail("local_exe", key.local_exe.clone())
                 .with_detail("sample_count", stats.sample_count.to_string())
                 .with_detail("cov", format!("{:.4}", stats.cov))
-                .with_detail("mean_interval_secs", format!("{:.2}", stats.mean_interval_secs))
+                .with_detail(
+                    "mean_interval_secs",
+                    format!("{:.2}", stats.mean_interval_secs),
+                )
                 .with_detail(
                     "stddev_interval_secs",
                     format!("{:.2}", stats.stddev_interval_secs),

@@ -260,10 +260,8 @@ impl AsnLookup {
         if let Ok(mut cache) = self.cache.write() {
             if cache.len() >= MAX_CACHE_ENTRIES {
                 // Evict the 10 oldest entries to avoid doing this every insert.
-                let mut entries: Vec<(IpAddr, DateTime<Utc>)> = cache
-                    .iter()
-                    .map(|(k, v)| (*k, v.last_updated))
-                    .collect();
+                let mut entries: Vec<(IpAddr, DateTime<Utc>)> =
+                    cache.iter().map(|(k, v)| (*k, v.last_updated)).collect();
                 entries.sort_by_key(|(_, ts)| *ts);
                 for (k, _) in entries.into_iter().take(10) {
                     cache.remove(&k);
@@ -377,10 +375,7 @@ fn parse_whois_output(ip: IpAddr, text: &str) -> AsnInfo {
     }
 
     // Pick the best tier. OrgName > descr > netname > empty.
-    let org = orgname
-        .or(descr)
-        .or(netname)
-        .unwrap_or_default();
+    let org = orgname.or(descr).or(netname).unwrap_or_default();
 
     let classification = classify_org(&org);
 
@@ -524,10 +519,7 @@ mod tests {
 
     #[test]
     fn test_classify_org_hosting_provider() {
-        assert_eq!(
-            classify_org("OVH SAS"),
-            AsnClassification::HostingProvider
-        );
+        assert_eq!(classify_org("OVH SAS"), AsnClassification::HostingProvider);
         assert_eq!(
             classify_org("Hetzner Online GmbH"),
             AsnClassification::HostingProvider
@@ -544,10 +536,7 @@ mod tests {
 
     #[test]
     fn test_classify_org_unknown() {
-        assert_eq!(
-            classify_org("Some Random ISP"),
-            AsnClassification::Unknown
-        );
+        assert_eq!(classify_org("Some Random ISP"), AsnClassification::Unknown);
         assert_eq!(classify_org(""), AsnClassification::Unknown);
     }
 

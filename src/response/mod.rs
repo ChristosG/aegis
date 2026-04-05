@@ -860,12 +860,8 @@ impl ResponseEngine {
             }
             ResponseAction::Block => {
                 if let Some(source_ip) = event.source_ip {
-                    let outcome = self.block_ip(
-                        source_ip,
-                        &event.description,
-                        Some(&threat_key),
-                        state,
-                    )?;
+                    let outcome =
+                        self.block_ip(source_ip, &event.description, Some(&threat_key), state)?;
                     Ok(outcome.describe(source_ip))
                 } else {
                     Ok(format!("Alert (no IP to block): {}", event.description))
@@ -878,12 +874,8 @@ impl ResponseEngine {
             ResponseAction::BlockAndKill => {
                 let mut msg = String::new();
                 if let Some(source_ip) = event.source_ip {
-                    let outcome = self.block_ip(
-                        source_ip,
-                        &event.description,
-                        Some(&threat_key),
-                        state,
-                    )?;
+                    let outcome =
+                        self.block_ip(source_ip, &event.description, Some(&threat_key), state)?;
                     msg.push_str(&outcome.describe(source_ip));
                     msg.push_str("; ");
                 }
@@ -1116,10 +1108,8 @@ impl ResponseEngine {
             }
         };
 
-        let missing_from_firewall: Vec<IpAddr> =
-            persisted.difference(&firewall).copied().collect();
-        let orphaned_in_firewall: Vec<IpAddr> =
-            firewall.difference(&persisted).copied().collect();
+        let missing_from_firewall: Vec<IpAddr> = persisted.difference(&firewall).copied().collect();
+        let orphaned_in_firewall: Vec<IpAddr> = firewall.difference(&persisted).copied().collect();
 
         let total_drift = missing_from_firewall.len() + orphaned_in_firewall.len();
 
@@ -1516,8 +1506,8 @@ mod tests {
         let blocked = BlockOutcome::Blocked.describe(ip);
         let pinned = BlockOutcome::SafetyPinInfrastructure("Cloudflare".into()).describe(ip);
         let whitelisted = BlockOutcome::Whitelisted.describe(ip);
-        let zero_tol = BlockOutcome::BlockedPermanentZeroTolerance("path_traversal".into())
-            .describe(ip);
+        let zero_tol =
+            BlockOutcome::BlockedPermanentZeroTolerance("path_traversal".into()).describe(ip);
 
         // Each outcome produces a distinct message so operators can tell
         // them apart in the threat log.
@@ -1577,12 +1567,7 @@ mod tests {
     #[test]
     fn test_safety_pin_blocks_cloudflare_ips() {
         let engine = ResponseEngine::for_test(ResponseConfig::default());
-        for ip_str in &[
-            "104.28.164.48",
-            "104.16.1.1",
-            "172.64.1.1",
-            "162.158.1.1",
-        ] {
+        for ip_str in &["104.28.164.48", "104.16.1.1", "172.64.1.1", "162.158.1.1"] {
             let ip: IpAddr = ip_str.parse().unwrap();
             assert!(
                 engine.is_well_known_destination(&ip),
@@ -1597,7 +1582,12 @@ mod tests {
         let engine = ResponseEngine::for_test(ResponseConfig::default());
         // Random IPs that should NOT be in the safety pin list — if any of
         // these somehow match, the CIDR list is too broad and needs fixing.
-        for ip_str in &["1.2.3.4", "185.156.73.233", "79.124.40.174", "45.148.10.187"] {
+        for ip_str in &[
+            "1.2.3.4",
+            "185.156.73.233",
+            "79.124.40.174",
+            "45.148.10.187",
+        ] {
             let ip: IpAddr = ip_str.parse().unwrap();
             assert!(
                 !engine.is_well_known_destination(&ip),
@@ -1616,13 +1606,21 @@ mod tests {
         let cloudfront: IpAddr = "13.224.185.100".parse().unwrap();
         let google: IpAddr = "142.250.32.6".parse().unwrap();
 
-        assert!(engine.describe_well_known_destination(&anthropic).contains("Anthropic"));
-        assert!(engine.describe_well_known_destination(&cf).contains("Cloudflare"));
-        assert!(engine.describe_well_known_destination(&gh).contains("GitHub"));
+        assert!(engine
+            .describe_well_known_destination(&anthropic)
+            .contains("Anthropic"));
+        assert!(engine
+            .describe_well_known_destination(&cf)
+            .contains("Cloudflare"));
+        assert!(engine
+            .describe_well_known_destination(&gh)
+            .contains("GitHub"));
         assert!(engine
             .describe_well_known_destination(&cloudfront)
             .contains("CloudFront"));
-        assert!(engine.describe_well_known_destination(&google).contains("Google"));
+        assert!(engine
+            .describe_well_known_destination(&google)
+            .contains("Google"));
     }
 
     #[test]
@@ -1672,7 +1670,12 @@ mod tests {
         let ip: IpAddr = "185.156.73.233".parse().unwrap(); // Reldas-net, not infra
 
         let outcome = engine
-            .block_ip(ip, "brute force from this IP", Some("brute_force"), &mut state)
+            .block_ip(
+                ip,
+                "brute force from this IP",
+                Some("brute_force"),
+                &mut state,
+            )
             .unwrap();
         assert_eq!(outcome, BlockOutcome::Blocked);
         assert!(state.is_ip_blocked(&ip));
@@ -1774,11 +1777,17 @@ mod tests {
         // Block entry must have expires_at = None (permanent)
         assert!(state.is_ip_blocked(&ip));
         let entry = state.blocked_ips.get(&ip).unwrap();
-        assert!(entry.expires_at.is_none(), "Zero-tolerance ban must be permanent");
+        assert!(
+            entry.expires_at.is_none(),
+            "Zero-tolerance ban must be permanent"
+        );
         assert!(entry.auto, "Should be marked as auto");
 
         // And the IP must be marked as escalated in strike history
-        assert!(state.is_escalated(&ip), "Zero-tolerance should mark IP as escalated");
+        assert!(
+            state.is_escalated(&ip),
+            "Zero-tolerance should mark IP as escalated"
+        );
     }
 
     #[test]
@@ -1832,10 +1841,7 @@ mod tests {
             .unwrap();
         match outcome {
             BlockOutcome::SafetyPinInfrastructure(_) => {}
-            other => panic!(
-                "Safety pin must win over zero-tolerance, got {:?}",
-                other
-            ),
+            other => panic!("Safety pin must win over zero-tolerance, got {:?}", other),
         }
         assert!(!state.is_ip_blocked(&ip));
     }
@@ -2199,10 +2205,8 @@ Anywhere (v6)              DENY IN     2001:db8::1
     fn test_reconcile_auto_repair_disabled_by_default() {
         let config = ResponseConfig::default();
         assert!(!config.auto_reconcile_firewall); // verify default
-        let (engine, mock) = response_engine_with_mock_firewall(
-            config,
-            vec!["1.1.1.1".parse().unwrap()],
-        );
+        let (engine, mock) =
+            response_engine_with_mock_firewall(config, vec!["1.1.1.1".parse().unwrap()]);
         let mut state = default_state();
         state.block_ip(BlockEntry {
             ip: "2.2.2.2".parse().unwrap(),

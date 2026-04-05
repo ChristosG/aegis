@@ -293,9 +293,7 @@ impl BeaconHistory {
         let oldest_key = self
             .entries
             .iter()
-            .min_by_key(|(_k, deque)| {
-                deque.back().copied().unwrap_or_else(|| DateTime::<Utc>::MIN_UTC)
-            })
+            .min_by_key(|(_k, deque)| deque.back().copied().unwrap_or(DateTime::<Utc>::MIN_UTC))
             .map(|(k, _)| k.clone());
         if let Some(k) = oldest_key {
             self.entries.remove(&k);
@@ -349,8 +347,7 @@ pub fn analyze_samples(samples: &[DateTime<Utc>]) -> Option<BeaconStats> {
 
     // Standard deviation (population, not sample — we treat the observed
     // intervals as the full dataset).
-    let variance: f64 =
-        intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
+    let variance: f64 = intervals.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
     let stddev = variance.sqrt();
 
     // Coefficient of variation. Guard against divide-by-zero (all intervals
@@ -439,7 +436,11 @@ mod tests {
         let stats = analyze_samples(&samples).unwrap();
         assert_eq!(stats.sample_count, 10);
         assert!((stats.mean_interval_secs - 60.0).abs() < 0.1);
-        assert!(stats.cov < 0.01, "CoV should be ~0 for strict periodic, got {}", stats.cov);
+        assert!(
+            stats.cov < 0.01,
+            "CoV should be ~0 for strict periodic, got {}",
+            stats.cov
+        );
     }
 
     #[test]
@@ -447,10 +448,7 @@ mod tests {
         // 10 samples at ~120s intervals with +/- 5% jitter
         let base = Utc::now();
         // jitter pattern: 120, 125, 118, 122, 117, 124, 119, 123, 116
-        let samples = timestamps_at_intervals(
-            base,
-            &[120, 125, 118, 122, 117, 124, 119, 123, 116],
-        );
+        let samples = timestamps_at_intervals(base, &[120, 125, 118, 122, 117, 124, 119, 123, 116]);
         let stats = analyze_samples(&samples).unwrap();
         assert!(
             stats.cov < 0.1,
@@ -553,7 +551,9 @@ mod tests {
         let key = make_key("1.2.3.4", 443);
         // Manually insert an old timestamp
         let old = Utc::now() - chrono::Duration::seconds(100);
-        history.entries.insert(key.clone(), [old].into_iter().collect());
+        history
+            .entries
+            .insert(key.clone(), [old].into_iter().collect());
 
         history.prune_stale();
         assert!(history.entries.is_empty(), "Stale entry should be pruned");
@@ -598,8 +598,9 @@ mod tests {
         let key = make_key("1.2.3.4", 443);
         // Record 10 samples at ~60s intervals in the past
         let base = Utc::now() - chrono::Duration::seconds(600);
-        let deque: VecDeque<DateTime<Utc>> =
-            (0..10).map(|i| base + chrono::Duration::seconds(60 * i)).collect();
+        let deque: VecDeque<DateTime<Utc>> = (0..10)
+            .map(|i| base + chrono::Duration::seconds(60 * i))
+            .collect();
         history.entries.insert(key.clone(), deque);
 
         let stats = history.analyze(&key).unwrap();
