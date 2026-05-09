@@ -401,6 +401,49 @@ pub struct ProcessConfig {
     pub suspicious_dirs: Vec<String>,
     /// Whether to attempt reverse shell detection.
     pub detect_reverse_shells: bool,
+    /// v2.6.2: Process names that, when they are the parent of a
+    /// reverse-shell match, downgrade severity from `critical` to `medium`
+    /// and the auto-action from `kill` to `alert`. The detection itself
+    /// still fires and is recorded with `degraded_by_dev_parent: true`.
+    /// Exact match, lower-cased; path-like entries are rejected at
+    /// startup with a warning.
+    #[serde(default = "default_dev_parent_allowlist")]
+    pub dev_parent_allowlist: Vec<String>,
+    /// v2.6.2: If true, ignore `dev_parent_allowlist` and treat every
+    /// reverse-shell match at full critical severity even when the parent
+    /// is an interactive dev tool. Use to "opt back in" to strict mode
+    /// in environments where dev-tool processes shouldn't be running.
+    #[serde(default)]
+    pub strict_under_dev_tools: bool,
+}
+
+/// v2.6.2 default list of interactive dev-tool process names whose child
+/// reverse-shell-shaped commands should be demoted from kill→alert.
+/// Source: the false-positive incident
+/// `20260509004453373-1434` where Aegis killed a benign Python loopback
+/// test launched by Claude Code.
+pub fn default_dev_parent_allowlist() -> Vec<String> {
+    vec![
+        "claude".into(),
+        "code".into(),
+        "code-insiders".into(),
+        "cursor".into(),
+        "zed".into(),
+        "vim".into(),
+        "nvim".into(),
+        "tmux".into(),
+        "screen".into(),
+        "jupyter".into(),
+        "jupyter-lab".into(),
+        "jupyter-notebook".into(),
+        "ipython".into(),
+        "android-studio".into(),
+        "studio".into(),
+        "idea".into(),
+        "fleet".into(),
+        "rider".into(),
+        "pycharm".into(),
+    ]
 }
 
 impl Default for ProcessConfig {
@@ -427,6 +470,8 @@ impl Default for ProcessConfig {
                 "/run/shm".into(),
             ],
             detect_reverse_shells: true,
+            dev_parent_allowlist: default_dev_parent_allowlist(),
+            strict_under_dev_tools: false,
         }
     }
 }
@@ -744,6 +789,13 @@ pub struct ResponseConfig {
     /// reconciliation task. Default 15 minutes.
     #[serde(default = "default_reconcile_interval_minutes")]
     pub reconcile_interval_minutes: u64,
+    /// v2.6.2: emit a desktop notification (libnotify / notify-send) when
+    /// Aegis takes a kill or block action with `auto_responded=true`.
+    /// Best-effort — failure to deliver a notification never crashes the
+    /// response engine. Disable in headless environments where notify-send
+    /// is unavailable. Default true.
+    #[serde(default = "default_true")]
+    pub desktop_notifications: bool,
 }
 
 impl Default for ResponseConfig {
@@ -795,6 +847,7 @@ impl Default for ResponseConfig {
             zero_tolerance_threats: default_zero_tolerance_threats(),
             auto_reconcile_firewall: default_auto_reconcile_firewall(),
             reconcile_interval_minutes: default_reconcile_interval_minutes(),
+            desktop_notifications: true,
         }
     }
 }

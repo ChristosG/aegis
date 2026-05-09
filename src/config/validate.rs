@@ -188,6 +188,24 @@ fn validate_process(config: &AegisConfig, result: &mut ValidationResult) {
             ));
         }
     }
+    // v2.6.2: dev_parent_allowlist must be process basenames, not paths.
+    // A path-like entry would never match `parent_name` (which comes from
+    // /proc/[pid]/comm and is a basename) and would silently disable the
+    // demotion for that name.
+    for entry in &config.process.dev_parent_allowlist {
+        let trimmed = entry.trim();
+        if trimmed.is_empty()
+            || trimmed.contains('/')
+            || trimmed.contains('\\')
+            || trimmed != entry
+        {
+            result.warnings.push(format!(
+                "[process] dev_parent_allowlist entry '{}' is path-like or has whitespace; \
+                 expected a bare process basename (e.g. 'claude', 'code', 'nvim'). Ignored.",
+                entry
+            ));
+        }
+    }
 }
 
 fn validate_file_integrity(config: &AegisConfig, result: &mut ValidationResult) {

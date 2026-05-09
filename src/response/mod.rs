@@ -15,6 +15,8 @@ use crate::core::state::{AppState, BlockEntry};
 use crate::core::threat::{ThreatEvent, ThreatType};
 use crate::util::ip;
 
+pub mod notify;
+
 // ---------------------------------------------------------------------------
 // FirewallBackend trait and implementations
 // ---------------------------------------------------------------------------
@@ -947,6 +949,24 @@ impl ResponseEngine {
             }
         }
 
+        // v2.6.2: a reverse-shell match emitted by the process module under
+        // a known interactive dev-tool parent has been demoted to Medium and
+        // tagged with `degraded_by_dev_parent`. Honor that hint by routing
+        // through severity-based defaults instead of the per-threat-type
+        // override (which is "kill" for reverse_shell). Without this short-
+        // circuit a `[response.overrides] reverse_shell = "kill"` would still
+        // kill the developer's process — defeating the demotion.
+        // See incident 20260509004453373-1434.
+        if event.details.get("degraded_by_dev_parent").map(String::as_str) == Some("true") {
+            return match event.severity {
+                crate::core::threat::ThreatSeverity::Info
+                | crate::core::threat::ThreatSeverity::Low => ResponseAction::Log,
+                crate::core::threat::ThreatSeverity::Medium => ResponseAction::Alert,
+                crate::core::threat::ThreatSeverity::High => ResponseAction::Block,
+                crate::core::threat::ThreatSeverity::Critical => ResponseAction::BlockAndKill,
+            };
+        }
+
         // Check per-threat-type overrides first.
         let threat_key = threat_type_to_config_key(&event.threat_type);
         if let Some(action_str) = self.config.overrides.get(&threat_key) {
@@ -981,6 +1001,18 @@ impl ResponseEngine {
             );
             info!("{}", msg);
             return Ok(msg);
+        }
+
+        // v2.6.2: best-effort desktop notification on destructive actions.
+        // Fires before the action so the user sees it immediately even if
+        // the kill/block fails. notify_action_taken() filters internally to
+        // Kill/Block/BlockAndKill — for Log/Alert/Quarantine this is a no-op.
+        if self.config.desktop_notifications {
+            // Best-effort: never let a notification problem propagate.
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                notify::notify_action_taken(event, &action);
+            }))
+            .ok();
         }
 
         // Config key for the current threat type (used for zero-tolerance check).

@@ -61,8 +61,39 @@ miner_cpu_threshold = 80.0
 miner_names = ["xmrig", "minerd", "cpuminer", "cgminer", "bfgminer", "ethminer", "nbminer", "t-rex", "phoenixminer", "ccminer"]
 # Suspicious binary directories
 suspicious_dirs = ["/tmp", "/dev/shm", "/var/tmp", "/run/shm"]
-# Reverse shell detection
+# Reverse shell detection.
+#
+# v2.6.2: detection now uses proximity-based signatures (socket creation
+# AND exec/redirect verb in the same cmdline within ~250 chars) instead of
+# the v2.6.1 single-substring matcher that false-positived on benign
+# `import socket` Python scripts. See incident 20260509004453373-1434.
 detect_reverse_shells = true
+
+# --------------------------------------------------------------------------
+# v2.6.2 — dev-parent allowlist (incident 20260509004453373-1434)
+# --------------------------------------------------------------------------
+# Process names that, when they are the *parent* of a reverse-shell match,
+# downgrade severity from `critical` to `medium` and the auto-action from
+# `kill` to `alert`. The detection still fires and is recorded with a
+# `degraded_by_dev_parent: true` detail — only the auto-response is softened.
+# This prevents Aegis from killing developer processes whose cmdlines merely
+# *resemble* a reverse shell (e.g. a port-finding helper that imports socket).
+#
+# Entries must be bare process basenames (no paths, no whitespace);
+# path-like entries are rejected at startup with a warning.
+# Leave commented out to use the shipped default list.
+# dev_parent_allowlist = [
+#   "claude", "code", "code-insiders", "cursor", "zed",
+#   "vim", "nvim", "tmux", "screen",
+#   "jupyter", "jupyter-lab", "jupyter-notebook", "ipython",
+#   "android-studio", "studio", "idea", "fleet", "rider", "pycharm",
+# ]
+
+# Set to true to ignore dev_parent_allowlist and treat every reverse-shell
+# match at full critical severity, even when the parent is an interactive
+# dev tool. Use in environments where dev-tool processes shouldn't be
+# running (production servers, container images).
+# strict_under_dev_tools = false
 
 [file_integrity]
 enabled = false
@@ -198,6 +229,17 @@ whitelist = [
 # to true only after verifying drift reports look correct for your system.
 # auto_reconcile_firewall = false
 # reconcile_interval_minutes = 15
+
+# --------------------------------------------------------------------------
+# v2.6.2 — desktop notifications on kill/block
+# --------------------------------------------------------------------------
+# Emit a desktop notification (libnotify / notify-send) whenever Aegis takes
+# a destructive auto-response (kill or block). The notification body lists
+# the threat type, target (pid+name or ip), action taken, and the threat ID
+# for journalctl correlation. Best-effort: failure to deliver (e.g. headless
+# server with no notify-send) never crashes the response engine. Disable on
+# headless / unattended deployments.
+# desktop_notifications = true
 
 # Severity -> default action: info=log, low=log, medium=alert, high=block, critical=block+kill
 # Per-threat-type overrides:
