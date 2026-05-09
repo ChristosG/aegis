@@ -132,6 +132,41 @@ fn validate_network(config: &AegisConfig, result: &mut ValidationResult) {
             );
         }
     }
+    // v2.6.1: validate excluded_destinations CIDRs and refuse public ranges.
+    // This list is meant for "obviously not a remote attacker" address space
+    // (loopback, link-local, optionally an internal management VLAN). Letting
+    // it cover public CIDRs would silently disable threat detection for those
+    // IPs — exactly the failure mode the safety pin exists to prevent.
+    for cidr_str in &config.network.excluded_destinations {
+        let parsed: Result<ipnet::IpNet, _> = cidr_str.parse();
+        let parsed = match parsed {
+            Ok(n) => n,
+            Err(_) => match cidr_str.parse::<IpAddr>() {
+                Ok(ip) => ipnet::IpNet::new(ip, if ip.is_ipv4() { 32 } else { 128 }).unwrap(),
+                Err(_) => {
+                    result.errors.push(format!(
+                        "[network] Invalid excluded_destinations CIDR: '{}'",
+                        cidr_str
+                    ));
+                    continue;
+                }
+            },
+        };
+        // Refuse any entry whose network address is not in a private/loopback
+        // /link-local/ULA range. Reuses util::ip::is_private which already
+        // covers RFC1918 + loopback + link-local + ULA. A public CIDR here
+        // is almost certainly a misconfiguration: it would disable network
+        // detection AND block_ip() against that range entirely.
+        if !crate::util::ip::is_private(&parsed.network()) {
+            result.errors.push(format!(
+                "[network] excluded_destinations entry '{}' is not loopback/link-local/private; \
+                 refusing to disable detection for a public range. Use [response] whitelist \
+                 (user-curated never-block) or [response] well_known_destinations (CDN ranges) \
+                 for public IPs.",
+                cidr_str
+            ));
+        }
+    }
 }
 
 fn validate_process(config: &AegisConfig, result: &mut ValidationResult) {

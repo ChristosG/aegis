@@ -289,6 +289,45 @@ pub struct NetworkConfig {
     /// v2.6.0 Bucket E: max samples retained per key.
     #[serde(default = "default_c2_beacon_max_samples_per_key")]
     pub c2_beacon_max_samples_per_key: usize,
+    /// v2.6.1: CIDR ranges whose connections must NEVER be considered
+    /// suspicious by network detectors and must NEVER be auto-blocked by
+    /// the response engine. Defense-in-depth complement to the existing
+    /// `is_private` filter and the `[response] well_known_destinations`
+    /// safety pin: applied at BOTH detection time (excluded destinations
+    /// don't increment the C2 beacon counter / don't trigger
+    /// suspicious-outbound alerts) AND at response time (the response
+    /// engine refuses to install a firewall rule against them, even if a
+    /// future detector path forgets to filter).
+    ///
+    /// Defaults to the four "obviously not a remote attacker" ranges:
+    ///   - `127.0.0.0/8`   (RFC 1122 IPv4 loopback)
+    ///   - `::1/128`       (RFC 4291 IPv6 loopback)
+    ///   - `169.254.0.0/16`(RFC 3927 IPv4 link-local)
+    ///   - `fe80::/10`     (RFC 4291 IPv6 link-local)
+    ///
+    /// Operator note: this is intentionally NOT a general-purpose
+    /// allowlist. Public-internet CIDRs do not belong here — use
+    /// `[response] whitelist` for user-curated never-block IPs and
+    /// `[response] well_known_destinations` for shipped CDN ranges.
+    /// Entries are validated as CIDRs at startup; invalid entries are
+    /// logged and skipped.
+    #[serde(default = "default_excluded_destinations")]
+    pub excluded_destinations: Vec<String>,
+}
+
+/// Default loopback + link-local CIDRs that are excluded from network
+/// detection and from auto-block. See `NetworkConfig::excluded_destinations`
+/// for the rationale. Prevents Aegis from interfering with local development
+/// tools (Gradle daemon, adb fork-server, systemd-resolved, Docker bridge
+/// loopback binds, etc.) that rapidly poll loopback ports and would otherwise
+/// trip the C2 beacon detector.
+pub fn default_excluded_destinations() -> Vec<String> {
+    vec![
+        "127.0.0.0/8".into(),
+        "::1/128".into(),
+        "169.254.0.0/16".into(),
+        "fe80::/10".into(),
+    ]
 }
 
 fn default_c2_beacon_min_samples() -> usize {
@@ -324,6 +363,13 @@ impl Default for NetworkConfig {
                 123,  // NTP
                 853,  // DNS over TLS
                 3478, 3479, 5349, // STUN/TURN (WebRTC)
+                // v2.6.1: common dev-tool ports. These show up on local Docker
+                // bridges and remote dev hosts and are not interesting to a
+                // security monitor — treating them as suspicious produced
+                // alert noise that masked real findings.
+                5037, // adb fork-server
+                9229, // Node.js inspector / V8 debug
+                5005, // JDWP (JVM debug)
             ],
             // v2.6.0: repurposed as per-scan event cap (was parallel-socket
             // count in v2.5.0). Default 1 = at most 1 beacon event per key
@@ -337,6 +383,7 @@ impl Default for NetworkConfig {
             c2_beacon_max_interval_secs: default_c2_beacon_max_interval_secs(),
             c2_beacon_max_keys: default_c2_beacon_max_keys(),
             c2_beacon_max_samples_per_key: default_c2_beacon_max_samples_per_key(),
+            excluded_destinations: default_excluded_destinations(),
         }
     }
 }

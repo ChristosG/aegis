@@ -52,6 +52,47 @@ impl FirewallBackend for IptablesBackend {
             .arg("AEGIS_BLOCK")
             .output();
 
+        // ------------------------------------------------------------------
+        // Loopback safeguard (post-2026-04-10 incident).
+        //
+        // A bug in the detector path caused `-s 127.0.0.1 -j DROP` to be
+        // installed in this chain, which cut all loopback traffic and broke
+        // systemd, dbus, IPC, and localhost services on Chris's workstation.
+        // Fixing the detector bug at the Rust level is necessary but not
+        // sufficient — a future refactor could reintroduce the same class
+        // of bug. Installing unconditional RETURN rules at the top of the
+        // chain means loopback packets can NEVER be dropped here, regardless
+        // of what any later DROP rule says. The guards are idempotent
+        // (checked with -C first) so startup reruns are safe.
+        // ------------------------------------------------------------------
+        let loopback_guards: &[&[&str]] = &[
+            &["AEGIS_BLOCK", "-i", "lo", "-j", "RETURN"],
+            &["AEGIS_BLOCK", "-s", "127.0.0.0/8", "-j", "RETURN"],
+            &["AEGIS_BLOCK", "-d", "127.0.0.0/8", "-j", "RETURN"],
+        ];
+        for guard in loopback_guards {
+            let check_guard = Command::new("iptables")
+                .arg("-C")
+                .args(*guard)
+                .output()
+                .context("Failed to execute iptables -C for loopback guard")?;
+            if !check_guard.status.success() {
+                let insert_guard = Command::new("iptables")
+                    .arg("-I")
+                    .args(*guard)
+                    .output()
+                    .context("Failed to execute iptables -I for loopback guard")?;
+                if !insert_guard.status.success() {
+                    let stderr = String::from_utf8_lossy(&insert_guard.stderr);
+                    warn!(
+                        rule = ?guard,
+                        stderr = %stderr,
+                        "Failed to install loopback guard rule; continuing"
+                    );
+                }
+            }
+        }
+
         // Check whether INPUT already jumps to AEGIS_BLOCK.
         let check = Command::new("iptables")
             .arg("-C")
@@ -126,13 +167,20 @@ impl FirewallBackend for IptablesBackend {
     }
 
     fn list_blocked_ips(&self) -> Result<Vec<IpAddr>> {
-        // `iptables -S AEGIS_BLOCK -n` produces one line per rule:
+        // `iptables -S AEGIS_BLOCK` produces one line per rule:
         //   -N AEGIS_BLOCK
         //   -A AEGIS_BLOCK -s 1.2.3.4/32 -j DROP
         //   -A AEGIS_BLOCK -s 2001:db8::/64 -j DROP
         // We only care about -A lines with a -s source clause.
+        //
+        // NOTE: no `-n` flag here. Modern iptables-nft (e.g. Ubuntu 22.04+,
+        // v1.8.10) rejects `-n` with `-S` as "Illegal option", which made
+        // this function silently return an empty list for days — the
+        // v2.6.0 drift detector thought the firewall was empty when it
+        // actually held thousands of rules. `-S` emits numeric addresses
+        // natively, so `-n` was never needed.
         let output = match Command::new("iptables")
-            .args(["-S", "AEGIS_BLOCK", "-n"])
+            .args(["-S", "AEGIS_BLOCK"])
             .output()
         {
             Ok(out) => out,
@@ -181,6 +229,64 @@ impl FirewallBackend for NftablesBackend {
             .arg("input")
             .arg("{ type filter hook input priority 0; policy accept; }")
             .output();
+
+        // Loopback safeguards — same rationale as IptablesBackend::init.
+        // `nft insert rule` prepends, so these land at the top of the chain
+        // and execute before any DROP rule that might be added later.
+        // `inet` family rules cover both IPv4 and IPv6, so `iif "lo"` is
+        // enough to protect ::1 alongside 127.0.0.0/8. We still add the
+        // explicit address-family rules as belt-and-suspenders.
+        let nft_guards: &[&[&str]] = &[
+            &[
+                "insert", "rule", "inet", "aegis", "input", "iif", "lo", "return",
+            ],
+            &[
+                "insert",
+                "rule",
+                "inet",
+                "aegis",
+                "input",
+                "ip",
+                "saddr",
+                "127.0.0.0/8",
+                "return",
+            ],
+            &[
+                "insert", "rule", "inet", "aegis", "input", "ip6", "saddr", "::1", "return",
+            ],
+        ];
+        for guard in nft_guards {
+            // nft has no -C equivalent; we check for presence by listing
+            // the chain and grepping for the rule's distinguishing tokens.
+            let list = Command::new("nft")
+                .args(["list", "chain", "inet", "aegis", "input"])
+                .output();
+            let already_present = list
+                .ok()
+                .map(|out| {
+                    let s = String::from_utf8_lossy(&out.stdout).into_owned();
+                    // Match by the tail of the guard args (the rule body), e.g.
+                    // `iif "lo" return`, `ip saddr 127.0.0.0/8 return`.
+                    let tail: Vec<&str> = guard.iter().skip(5).copied().collect();
+                    tail.iter().all(|t| s.contains(t))
+                        && s.contains("return")
+                        && (s.contains("iif") || s.contains("saddr"))
+                })
+                .unwrap_or(false);
+            if !already_present {
+                let out = Command::new("nft").args(*guard).output();
+                if let Ok(out) = out {
+                    if !out.status.success() {
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        warn!(
+                            rule = ?guard,
+                            stderr = %stderr,
+                            "Failed to install nft loopback guard; continuing"
+                        );
+                    }
+                }
+            }
+        }
 
         Ok(())
     }
@@ -646,13 +752,37 @@ pub struct ResponseEngine {
 
 impl ResponseEngine {
     pub fn new(config: ResponseConfig, data_dir: PathBuf) -> Self {
+        Self::new_with_extra_safety_pin(config, data_dir, &[])
+    }
+
+    /// v2.6.1: like `new`, but the caller supplies additional CIDR strings
+    /// to merge into the safety-pin list (typically
+    /// `[network] excluded_destinations`). The merged list is treated
+    /// uniformly: any block attempt against an IP in the merged list returns
+    /// `BlockOutcome::SafetyPinInfrastructure` and never installs a firewall
+    /// rule. Reusing the safety-pin mechanism rather than introducing a
+    /// parallel "loopback skip" path means there is exactly one place in
+    /// `block_ip()` that can let a never-block CIDR through.
+    pub fn new_with_extra_safety_pin(
+        config: ResponseConfig,
+        data_dir: PathBuf,
+        extra_safety_pin_cidrs: &[String],
+    ) -> Self {
         // Parse whitelist CIDRs at construction time.
         let whitelist = ip::parse_whitelist(&config.whitelist);
 
         // Parse well_known_destinations CIDRs (v2.6.0 safety pin). Reuses the
         // same parser as whitelist — invalid entries are logged and skipped,
         // never fail the startup. See docs/specs/2026-04-05-aegis-v2-design.md §2.
-        let well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+        let mut well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+        let extra = ip::parse_whitelist(extra_safety_pin_cidrs);
+        if !extra.is_empty() {
+            info!(
+                count = extra.len(),
+                "Merging [network] excluded_destinations into safety pin (loopback/link-local)"
+            );
+            well_known_destinations.extend(extra);
+        }
         info!(
             count = well_known_destinations.len(),
             "Loaded well_known_destinations safety pin CIDR list"
@@ -745,6 +875,14 @@ impl ResponseEngine {
         // table we fall back to a generic label. Extended lookup via whois
         // is in Bucket C's ASN module.
         const KNOWN_PROVIDERS: &[(&str, &str)] = &[
+            // v2.6.1: loopback + link-local labels for the
+            // [network] excluded_destinations defaults. Helps operators
+            // distinguish "Aegis refused to block 127.0.0.1" from a
+            // legitimate CDN safety-pin trip in the threat log.
+            ("127.0.0.0/8", "loopback (IPv4)"),
+            ("::1/128", "loopback (IPv6)"),
+            ("169.254.0.0/16", "link-local (IPv4)"),
+            ("fe80::/10", "link-local (IPv6)"),
             ("160.79.104.0/21", "Anthropic API"),
             ("104.16.0.0/13", "Cloudflare"),
             ("104.24.0.0/14", "Cloudflare"),
@@ -1132,8 +1270,23 @@ impl ResponseEngine {
                      threshold if this box legitimately has many rules."
                 );
             } else {
-                // Re-add missing rules.
+                // Re-add missing rules. If a "missing" IP is actually
+                // whitelisted, that means persisted state is corrupted
+                // (e.g. from a pre-fix version that banned loopback). Don't
+                // blindly re-install the rule — purge the bad entry so
+                // state self-heals, and loudly warn the operator.
                 for ip in &missing_from_firewall {
+                    let canonical = ip::canonicalize(*ip);
+                    if ip::is_whitelisted(&canonical, &self.whitelist) {
+                        warn!(
+                            ip = %ip,
+                            canonical = %canonical,
+                            "Reconcile: refusing to restore whitelisted IP; purging from state"
+                        );
+                        state.blocked_ips.remove(ip);
+                        state.blocked_ips.remove(&canonical);
+                        continue;
+                    }
                     if let Err(e) = self.firewall.block_ip(ip) {
                         warn!(ip = %ip, error = %e, "Reconcile: failed to re-add missing firewall rule");
                     } else {
@@ -1162,13 +1315,43 @@ impl ResponseEngine {
     }
 
     /// Block an IP address via the configured firewall backend (manual/CLI use).
+    ///
+    /// Applies the user whitelist and loopback/RFC1918 sanity checks before
+    /// touching the firewall backend. This is the code path used by
+    /// `aegis block <ip>` and by the daemon startup restoration loop in
+    /// `Engine::new` — both legitimately *ask* for a raw firewall block
+    /// without going through the full detector pipeline, but neither should
+    /// be allowed to cut loopback or RFC1918 traffic. The 2026-04-10
+    /// incident happened in a related path; this guard keeps CLI and
+    /// restoration honest even if persisted state has been corrupted.
     pub fn block_ip_firewall(&self, ip: &IpAddr) -> Result<()> {
         let validated: IpAddr = ip
             .to_string()
             .parse()
             .context("IP address validation failed")?;
+        // Canonicalize IPv4-mapped IPv6 so the whitelist check can catch
+        // `::ffff:127.0.0.1` and friends even if an older block_list.json
+        // persisted entries in the mapped form.
+        let validated = ip::canonicalize(validated);
+        if ip::is_whitelisted(&validated, &self.whitelist) {
+            warn!(
+                ip = %validated,
+                "Refusing manual firewall block: IP is in the user whitelist"
+            );
+            anyhow::bail!(
+                "IP {} is in the user whitelist and cannot be blocked via the firewall backend",
+                validated
+            );
+        }
         info!(ip = %validated, "Blocking IP address via firewall");
         self.firewall.block_ip(&validated)
+    }
+
+    /// Public helper so other modules (e.g. `Engine::new` during startup
+    /// restoration) can consult the same whitelist the response engine uses,
+    /// without having to re-parse the CIDR list.
+    pub fn is_whitelisted(&self, ip: &IpAddr) -> bool {
+        ip::is_whitelisted(ip, &self.whitelist)
     }
 
     /// Remove an IP address from the firewall block list.
@@ -1461,8 +1644,17 @@ mod tests {
         /// selection (which would need root for iptables) and injects a
         /// NoOpBackend instead.
         fn for_test(config: ResponseConfig) -> Self {
+            Self::for_test_with_extra_safety_pin(config, &[])
+        }
+
+        fn for_test_with_extra_safety_pin(
+            config: ResponseConfig,
+            extra: &[String],
+        ) -> Self {
             let whitelist = ip::parse_whitelist(&config.whitelist);
-            let well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
+            let mut well_known_destinations =
+                ip::parse_whitelist(&config.well_known_destinations);
+            well_known_destinations.extend(ip::parse_whitelist(extra));
             let zero_tolerance_threats: HashSet<String> =
                 config.zero_tolerance_threats.iter().cloned().collect();
             let firewall: Box<dyn FirewallBackend> = Box::new(NoOpBackend);
@@ -1643,6 +1835,58 @@ mod tests {
         // Verify no entry was added to state.blocked_ips
         assert!(!state.is_ip_blocked(&ip));
         assert!(state.blocked_ips.is_empty());
+    }
+
+    #[test]
+    fn test_block_ip_loopback_excluded_via_extra_safety_pin() {
+        // v2.6.1 regression test: when [network] excluded_destinations is
+        // merged into the safety-pin list (via new_with_extra_safety_pin /
+        // for_test_with_extra_safety_pin), block_ip() against 127.0.0.1
+        // must short-circuit with SafetyPinInfrastructure and never hit
+        // the firewall backend. This is the response-layer half of the
+        // gradle/adb fix; the network-layer half is tested in
+        // src/modules/network/mod.rs::excluded_destinations_tests.
+        let mut config = ResponseConfig::default();
+        // The default user whitelist contains 127.0.0.0/8 too, which would
+        // short-circuit before the safety pin and produce BlockOutcome::
+        // Whitelisted. Clear it so this test exercises ONLY the safety-pin
+        // path that the new excluded_destinations integration installs.
+        config.whitelist.clear();
+        let extra = vec![
+            "127.0.0.0/8".into(),
+            "::1/128".into(),
+            "169.254.0.0/16".into(),
+            "fe80::/10".into(),
+        ];
+        let engine = ResponseEngine::for_test_with_extra_safety_pin(config, &extra);
+        let mut state = default_state();
+
+        for ip_str in &["127.0.0.1", "127.5.5.5", "::1", "169.254.10.20", "fe80::abcd"] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            let outcome = engine
+                .block_ip(ip, "test loopback", Some("c2_beacon"), &mut state)
+                .unwrap();
+            assert!(
+                matches!(outcome, BlockOutcome::SafetyPinInfrastructure(_)),
+                "expected SafetyPinInfrastructure for {}, got {:?}",
+                ip_str,
+                outcome
+            );
+            assert!(
+                !state.is_ip_blocked(&ip),
+                "{} must NOT end up in the blocked-IP list",
+                ip_str
+            );
+        }
+        assert!(state.blocked_ips.is_empty());
+
+        // Sanity: a public IP still gets blocked normally — protection
+        // against external attackers is unchanged.
+        let public: IpAddr = "203.0.113.5".parse().unwrap();
+        let outcome = engine
+            .block_ip(public, "test public", Some("c2_beacon"), &mut state)
+            .unwrap();
+        assert_eq!(outcome, BlockOutcome::Blocked);
     }
 
     #[test]
@@ -2270,5 +2514,117 @@ Anywhere (v6)              DENY IN     2001:db8::1
         assert!(!report.auto_reconciled);
         // No unblock calls should have been made
         assert!(mock.unblock_calls.lock().unwrap().is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-04-10 incident regression tests
+    // -----------------------------------------------------------------------
+    //
+    // These cover the loopback-outage class of bug. Each test fails on the
+    // old code and passes on the fix; keep them in lockstep if the block
+    // pipeline is ever refactored.
+
+    #[test]
+    fn test_block_ip_firewall_refuses_loopback() {
+        // The public firewall API used to bypass the whitelist entirely.
+        // With the fix, it must refuse loopback unconditionally — even
+        // though the default whitelist contains 127.0.0.0/8.
+        let config = ResponseConfig::default();
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![]);
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let result = engine.block_ip_firewall(&loopback);
+        assert!(result.is_err(), "expected loopback block to be rejected");
+        assert!(
+            mock.block_calls.lock().unwrap().is_empty(),
+            "backend must not have been called for a whitelisted IP"
+        );
+    }
+
+    #[test]
+    fn test_block_ip_firewall_refuses_rfc1918() {
+        let config = ResponseConfig::default();
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![]);
+        for ip_str in ["10.0.0.1", "172.16.5.5", "192.168.1.1"] {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                engine.block_ip_firewall(&ip).is_err(),
+                "expected {} to be rejected",
+                ip_str
+            );
+        }
+        assert!(mock.block_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_block_ip_firewall_refuses_ipv4_mapped_loopback() {
+        // The exact form that bit us on 2026-04-10: the detector had
+        // `::ffff:127.0.0.1` in hand, and this path skipped the whitelist
+        // because ipnet::IpNet can't match across IPv4/IPv6 family boundary.
+        let config = ResponseConfig::default();
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![]);
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(
+            engine.block_ip_firewall(&mapped_loopback).is_err(),
+            "::ffff:127.0.0.1 must be refused via canonicalization"
+        );
+        assert!(mock.block_calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_block_ip_firewall_still_blocks_public_ips() {
+        // Regression guard: don't let the new safety checks break the
+        // legitimate use case of blocking a real malicious IP.
+        let config = ResponseConfig::default();
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![]);
+        let bad: IpAddr = "185.156.73.233".parse().unwrap();
+        assert!(engine.block_ip_firewall(&bad).is_ok());
+        assert_eq!(mock.block_calls.lock().unwrap().as_slice(), &[bad]);
+    }
+
+    #[test]
+    fn test_reconcile_self_heals_whitelisted_missing_entry() {
+        // Simulate the poisoned state we saw in Chris's block_list.json:
+        // a loopback (or IPv4-mapped-loopback) entry that slipped in via
+        // the pre-fix buggy detector. On reconcile with auto_reconcile
+        // enabled, we must NOT re-install the rule — instead we purge it
+        // from state so the next save rewrites block_list.json without it.
+        let mut config = ResponseConfig::default();
+        config.auto_reconcile_firewall = true;
+        let (engine, mock) = response_engine_with_mock_firewall(config, vec![]);
+
+        let mut state = default_state();
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        state.block_ip(BlockEntry {
+            ip: loopback,
+            reason: "pre-fix poisoning".into(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            auto: true,
+        });
+
+        let _report = engine.reconcile_firewall_state(&mut state);
+
+        // State must no longer contain the bad entry (self-heal)…
+        assert!(
+            !state.is_ip_blocked(&loopback),
+            "reconcile must purge whitelisted entries from state"
+        );
+        // …and the backend must not have been asked to re-add it.
+        assert!(
+            mock.block_calls.lock().unwrap().is_empty(),
+            "backend must not be called to re-add a whitelisted IP"
+        );
+    }
+
+    #[test]
+    fn test_is_whitelisted_helper_respects_config() {
+        let config = ResponseConfig::default();
+        let (engine, _mock) = response_engine_with_mock_firewall(config, vec![]);
+        assert!(engine.is_whitelisted(&"127.0.0.1".parse().unwrap()));
+        assert!(engine.is_whitelisted(&"::1".parse().unwrap()));
+        assert!(engine.is_whitelisted(&"10.0.0.1".parse().unwrap()));
+        // IPv4-mapped loopback — the original bug
+        assert!(engine.is_whitelisted(&"::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!engine.is_whitelisted(&"8.8.8.8".parse().unwrap()));
     }
 }

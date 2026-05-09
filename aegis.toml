@@ -19,11 +19,39 @@ syn_flood_threshold = 50
 port_scan_threshold = 15
 # Time window for port scan detection (seconds)
 port_scan_window = 60
-# Known service ports to exclude from suspicious outbound
-known_outbound_ports = [80, 443, 53, 22, 25, 587, 993, 995, 465, 143, 110, 5228, 5229, 5230, 8080, 8443, 123, 853, 3478, 3479, 5349]
+# Known service ports to exclude from suspicious outbound.
+# v2.6.1: added 5037 (adb fork-server), 9229 (Node inspector), 5005 (JDWP).
+# These are common dev-tool ports — flagging them produced alert noise
+# without improving detection of real attackers.
+known_outbound_ports = [80, 443, 53, 22, 25, 587, 993, 995, 465, 143, 110, 5228, 5229, 5230, 8080, 8443, 123, 853, 3478, 3479, 5349, 5037, 9229, 5005]
 # C2 beacon detection - min beacons in window to flag
 c2_beacon_threshold = 10
 c2_beacon_window = 300
+
+# --------------------------------------------------------------------------
+# v2.6.1 — loopback / link-local exclusion
+# --------------------------------------------------------------------------
+# CIDRs that are NEVER counted by network detectors AND NEVER auto-blocked
+# by the response engine. Prevents Aegis from interfering with local
+# development tools (Gradle daemon, adb fork-server, systemd-resolved,
+# Docker bridge loopback binds, language-server LSPs, etc.) that bind to
+# 127.0.0.1 and get polled rapidly by their clients — pre-v2.6.1 this
+# pattern tripped the C2 beacon detector and the response engine added
+# 127.0.0.0/8 DROP rules, breaking every local toolchain at once.
+#
+# Defaults — applied if the key is omitted entirely — are the four
+# "by definition not a remote attacker" ranges:
+#   - 127.0.0.0/8     (RFC 1122 IPv4 loopback)
+#   - ::1/128         (RFC 4291 IPv6 loopback)
+#   - 169.254.0.0/16  (RFC 3927 IPv4 link-local, e.g. APIPA)
+#   - fe80::/10       (RFC 4291 IPv6 link-local)
+#
+# IMPORTANT: this list is NOT a general-purpose allowlist. Public-internet
+# CIDRs are REJECTED at startup (validation error) — disabling detection
+# for a public range silently hides real attackers. For user-curated
+# never-block IPs use [response] whitelist; for shipped CDN ranges use
+# [response] well_known_destinations.
+# excluded_destinations = ["127.0.0.0/8", "::1/128", "169.254.0.0/16", "fe80::/10"]
 
 [process]
 enabled = true

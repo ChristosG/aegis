@@ -17,13 +17,40 @@ pub fn parse_cidr(s: &str) -> Result<IpNet> {
         .with_context(|| format!("Invalid CIDR notation: '{}'", s))
 }
 
+/// Collapse an IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) down to its bare
+/// IPv4 form, leaving all other addresses untouched.
+///
+/// Dual-stack sockets on Linux (Java's default, plus many other runtimes)
+/// cause `/proc/net/tcp6` to report IPv4 peers as `::ffff:a.b.c.d`. Without
+/// canonicalization those addresses slip past every IPv4-based safety check
+/// — `is_private`'s loopback branch (`Ipv6Addr::is_loopback()` only matches
+/// literal `::1`), `is_whitelisted` (IPv4 CIDRs can't contain IPv6), and the
+/// v2.6.0 Bucket-A safety pin (same issue). That's the bug class that caused
+/// the 2026-04-10 loopback outage, plus silent false-blocking of
+/// Cloudflare/Google/CloudFront CIDRs across the same period.
+///
+/// Call this at module boundaries when an IP crosses from a parser or
+/// network source into any logic that inspects address semantics.
+pub fn canonicalize(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            None => IpAddr::V6(v6),
+        },
+        v4 => v4,
+    }
+}
+
 /// Check whether an IP address belongs to a private/reserved range.
 ///
 /// Covers RFC 1918 (IPv4), loopback, link-local, and IPv6 equivalents.
+///
+/// Canonicalizes IPv4-mapped IPv6 first so `::ffff:127.0.0.1` is correctly
+/// classified as loopback (see `canonicalize`).
 pub fn is_private(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_private_v4(v4),
-        IpAddr::V6(v6) => is_private_v6(v6),
+    match canonicalize(*ip) {
+        IpAddr::V4(v4) => is_private_v4(&v4),
+        IpAddr::V6(v6) => is_private_v6(&v6),
     }
 }
 
@@ -82,8 +109,16 @@ fn is_private_v6(ip: &Ipv6Addr) -> bool {
 }
 
 /// Check if an IP address falls within any of the given CIDR whitelist ranges.
+///
+/// Canonicalizes IPv4-mapped IPv6 before the containment check so that, e.g.,
+/// `::ffff:127.0.0.1` correctly matches a `127.0.0.0/8` whitelist entry and
+/// `::ffff:104.18.19.12` correctly matches a Cloudflare safety-pin CIDR.
+/// Without this, `ipnet::IpNet::contains` is family-strict and silently
+/// returns false across IPv4/IPv6 family boundaries — the exact bug that
+/// let the v2.6.0 safety pin fail in production.
 pub fn is_whitelisted(ip: &IpAddr, whitelist: &[IpNet]) -> bool {
-    whitelist.iter().any(|net| net.contains(ip))
+    let canonical = canonicalize(*ip);
+    whitelist.iter().any(|net| net.contains(&canonical))
 }
 
 /// Parse a list of CIDR strings into IpNet values, skipping any that fail to parse.
@@ -210,5 +245,81 @@ mod tests {
         let cidrs = vec!["10.0.0.0/8".into(), "invalid".into(), "::1/128".into()];
         let nets = parse_whitelist(&cidrs);
         assert_eq!(nets.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // IPv4-mapped IPv6 canonicalization — regression tests for the 2026-04-10
+    // incident where dual-stack sockets produced `::ffff:127.0.0.1` addresses
+    // that bypassed every IPv4-based safety check.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_canonicalize_ipv4_mapped_loopback() {
+        let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        let canonical = canonicalize(mapped);
+        assert_eq!(canonical, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    }
+
+    #[test]
+    fn test_canonicalize_ipv4_mapped_public() {
+        // 104.18.19.12 is a real Cloudflare IP that was false-blocked in production.
+        let mapped: IpAddr = "::ffff:104.18.19.12".parse().unwrap();
+        let canonical = canonicalize(mapped);
+        assert_eq!(canonical, IpAddr::V4(Ipv4Addr::new(104, 18, 19, 12)));
+    }
+
+    #[test]
+    fn test_canonicalize_pure_ipv6_unchanged() {
+        // A real IPv6 address is not IPv4-mapped and must not be rewritten.
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert_eq!(canonicalize(v6), v6);
+
+        // ::1 is not IPv4-mapped either.
+        let localhost6: IpAddr = "::1".parse().unwrap();
+        assert_eq!(canonicalize(localhost6), localhost6);
+    }
+
+    #[test]
+    fn test_canonicalize_ipv4_unchanged() {
+        let v4: IpAddr = "8.8.8.8".parse().unwrap();
+        assert_eq!(canonicalize(v4), v4);
+    }
+
+    #[test]
+    fn test_is_private_recognizes_ipv4_mapped_loopback() {
+        // THE incident bug: `Ipv6Addr::is_loopback()` only matches `::1`, so
+        // `::ffff:127.0.0.1` used to skate past the private-range check in
+        // every network detector. This test is the regression guard.
+        let mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(
+            is_private(&mapped),
+            "::ffff:127.0.0.1 must be treated as loopback"
+        );
+    }
+
+    #[test]
+    fn test_is_private_recognizes_ipv4_mapped_rfc1918() {
+        let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+        assert!(is_private(&mapped));
+        let mapped: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
+        assert!(is_private(&mapped));
+    }
+
+    #[test]
+    fn test_is_whitelisted_matches_ipv4_mapped_across_family_boundary() {
+        // The v2.6.0 safety pin was defeated by this: loopback is in the
+        // whitelist as `127.0.0.0/8` (IPv4), but the incoming IP was an
+        // IPv4-mapped IPv6 which `IpNet::contains` rejects due to family
+        // mismatch. Canonicalization fixes both loopback AND public CDN IPs.
+        let whitelist = vec![
+            parse_cidr("127.0.0.0/8").unwrap(),
+            parse_cidr("104.18.0.0/16").unwrap(), // Cloudflare-ish
+        ];
+        let loopback_mapped: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        let cdn_mapped: IpAddr = "::ffff:104.18.19.12".parse().unwrap();
+        let unrelated: IpAddr = "::ffff:8.8.8.8".parse().unwrap();
+        assert!(is_whitelisted(&loopback_mapped, &whitelist));
+        assert!(is_whitelisted(&cdn_mapped, &whitelist));
+        assert!(!is_whitelisted(&unrelated, &whitelist));
     }
 }

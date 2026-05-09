@@ -55,7 +55,15 @@ impl Engine {
     pub fn new(config: AegisConfig) -> Self {
         let event_bus = EventBus::new(1024);
         let data_dir = resolve_path(&config.general.data_dir);
-        let response_engine = ResponseEngine::new(config.response.clone(), data_dir.clone());
+        // v2.6.1: merge [network] excluded_destinations into the response
+        // engine's safety-pin list so the response layer ALSO refuses to
+        // install firewall rules against loopback/link-local — defense in
+        // depth against any future detector path that forgets to filter.
+        let response_engine = ResponseEngine::new_with_extra_safety_pin(
+            config.response.clone(),
+            data_dir.clone(),
+            &config.network.excluded_destinations,
+        );
         let alert_manager = AlertManager::new(config.alerting.clone());
         let enabled_modules = modules::create_modules(&config);
 
@@ -70,12 +78,41 @@ impl Engine {
         let storage = Storage::new(&data_dir);
         if let Ok(blocked) = storage.load_block_list() {
             if !blocked.is_empty() {
-                // Filter out expired blocks before restoring
+                // Filter out expired blocks before restoring.
                 let now = chrono::Utc::now();
-                let active: std::collections::HashMap<_, _> = blocked
+                let mut active: std::collections::HashMap<_, _> = blocked
                     .into_iter()
                     .filter(|(_, entry)| entry.expires_at.is_none_or(|exp| exp > now))
                     .collect();
+
+                // Self-heal: refuse to restore any IP that the current
+                // whitelist covers (including via IPv4-mapped-IPv6
+                // canonicalization). Persisted state from pre-fix versions
+                // may contain loopback, RFC1918, or ::ffff:* entries from
+                // the 2026-04-10 detector bug class — restoring them
+                // verbatim would reintroduce the outage. Instead, drop them
+                // from the in-memory state so the next save rewrites
+                // block_list.json without the poison entries.
+                let before = active.len();
+                active.retain(|ip, _entry| {
+                    if response_engine.is_whitelisted(ip) {
+                        warn!(
+                            ip = %ip,
+                            "Refusing to restore whitelisted IP from persisted block list \
+                             (possible stale entry from pre-fix version \u{2014} will be purged)"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                });
+                let purged = before - active.len();
+                if purged > 0 {
+                    warn!(
+                        purged,
+                        "Purged {} whitelisted/loopback entries from restored block list", purged
+                    );
+                }
 
                 if !active.is_empty() {
                     info!(
@@ -83,7 +120,7 @@ impl Engine {
                         "Restoring {} blocked IP(s) from disk",
                         active.len()
                     );
-                    // Re-apply firewall rules for persisted blocks
+                    // Re-apply firewall rules for persisted blocks.
                     let mut restored = 0u32;
                     for ip in active.keys() {
                         if let Err(e) = response_engine.block_ip_firewall(ip) {

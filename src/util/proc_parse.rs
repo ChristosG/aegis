@@ -52,7 +52,18 @@ pub fn parse_hex_ip(hex: &str) -> Result<IpAddr> {
                 octets[i * 4 + 2] = be[1];
                 octets[i * 4 + 3] = be[0];
             }
-            Ok(IpAddr::V6(Ipv6Addr::from(octets)))
+            let v6 = Ipv6Addr::from(octets);
+            // Dual-stack sockets (Java's default, plus many other runtimes)
+            // cause `/proc/net/tcp6` to report IPv4 peers as IPv4-mapped IPv6
+            // addresses of the form `::ffff:a.b.c.d`. Canonicalize at parse
+            // time so the rest of the pipeline sees a normal IPv4 address
+            // and all IPv4-based safety checks apply uniformly. This is the
+            // source-level fix for the 2026-04-10 loopback outage and
+            // companion Cloudflare/Google/CloudFront false-block bugs.
+            Ok(match v6.to_ipv4_mapped() {
+                Some(v4) => IpAddr::V4(v4),
+                None => IpAddr::V6(v6),
+            })
         }
         _ => {
             anyhow::bail!(
@@ -256,5 +267,37 @@ mod tests {
     fn test_read_proc_file_nonexistent() {
         let result = read_proc_file(Path::new("/proc/nonexistent_file_aegis_test"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_hex_ip_v6_mapped_loopback_normalized_to_v4() {
+        // /proc/net/tcp6 stores addresses as four u32 groups printed in hex,
+        // each group in host byte order (little-endian on x86). For
+        // `::ffff:127.0.0.1` the in-memory bytes are
+        //   [0,0,0,0, 0,0,0,0, 0,0,ff,ff, 7f,00,00,01]
+        // Group 2 holds bytes [0,0,ff,ff] which as a LE u32 reads back as
+        // 0xffff0000, hex "FFFF0000". Group 3 holds [7f,0,0,1] which as a
+        // LE u32 is 0x0100007f, hex "0100007F". This is the actual form the
+        // kernel produces for dual-stack Java sockets.
+        let hex = "0000000000000000FFFF00000100007F";
+        let ip = parse_hex_ip(hex).unwrap();
+        // Canonicalized: should be IPv4 127.0.0.1, NOT IPv6 ::ffff:127.0.0.1.
+        // This is the regression guard for the 2026-04-10 incident.
+        assert_eq!(
+            ip,
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            "IPv4-mapped IPv6 must be canonicalized to bare IPv4 at parse time"
+        );
+    }
+
+    #[test]
+    fn test_parse_hex_ip_v6_real_unchanged() {
+        // A pure IPv6 address (e.g., ::1 in the same encoding) should stay
+        // IPv6. This guards against over-eager collapsing.
+        // ::1 is [0;15] + [1] → 16 bytes. In the LE-per-group encoding:
+        // groups are 0,0,0,0x01000000 → hex chunks "00000000 00000000 00000000 01000000"
+        let hex = "00000000000000000000000001000000";
+        let ip = parse_hex_ip(hex).unwrap();
+        assert_eq!(ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
     }
 }

@@ -12,7 +12,8 @@ use tracing::{debug, info, warn};
 use crate::config::schema::NetworkConfig;
 use crate::core::threat::{ThreatEvent, ThreatType};
 use crate::modules::ScanModule;
-use crate::util::ip::is_private;
+use crate::util::ip::{is_private, is_whitelisted, parse_whitelist};
+use ipnet::IpNet;
 use crate::util::proc_parse::{parse_tcp_line, tcp_state};
 
 use beacon_history::{exe_path_for_pid, history_file_path, BeaconHistory, BeaconKey};
@@ -48,6 +49,14 @@ pub struct NetworkModule {
     /// that feeds into beacon_history. Without this, we'd mistake
     /// persistent connections for periodic beacons.
     last_seen_keys: Mutex<HashSet<BeaconKey>>,
+    /// v2.6.1: parsed `excluded_destinations` CIDRs. Connections to a
+    /// destination matching any of these ranges are skipped by every
+    /// network detector (suspicious-outbound, C2 beacon, etc.) BEFORE
+    /// they can increment any counter. Defense-in-depth complement to
+    /// `is_private`: explicit, configurable, and mirrored at the
+    /// response-engine layer so a future detector that forgets to call
+    /// us still can't get a loopback IP into iptables.
+    excluded_destinations: Vec<IpNet>,
 }
 
 /// Look up the exe path and full command line for a given PID.
@@ -126,12 +135,26 @@ impl NetworkModule {
             config.c2_beacon_max_samples_per_key,
             config.c2_beacon_window,
         );
+        let excluded_destinations = parse_whitelist(&config.excluded_destinations);
+        info!(
+            count = excluded_destinations.len(),
+            "Loaded network excluded_destinations CIDRs (loopback/link-local skip list)"
+        );
         Self {
             config,
             data_dir,
             beacon_history: Mutex::new(beacon_history),
             last_seen_keys: Mutex::new(HashSet::new()),
+            excluded_destinations,
         }
+    }
+
+    /// Whether a remote IP belongs to a configured excluded destination
+    /// CIDR (defaults: loopback + link-local). Detectors must consult this
+    /// in addition to `is_private` so operators can extend the skip list
+    /// (e.g. an internal management VLAN) without code changes.
+    fn is_excluded(&self, ip: &IpAddr) -> bool {
+        is_whitelisted(ip, &self.excluded_destinations)
     }
 
     /// Read and parse all TCP connections from /proc/net/tcp and /proc/net/tcp6.
@@ -360,6 +383,14 @@ impl NetworkModule {
                 continue;
             }
 
+            // v2.6.1: also skip explicitly-excluded destinations (loopback +
+            // link-local by default, operator-extensible). Belt-and-braces with
+            // the is_private check above so a future expansion of this list
+            // (e.g. management VLAN) takes effect without further code edits.
+            if self.is_excluded(&conn.remote_ip) {
+                continue;
+            }
+
             // Skip inbound connections: if the local port has a LISTEN socket,
             // this is a server accepting a client — not an outbound connection.
             // Also skip privileged ports (< 1024) which are always server ports.
@@ -477,6 +508,14 @@ impl NetworkModule {
                 continue;
             }
             if is_private(&conn.remote_ip) {
+                continue;
+            }
+            // v2.6.1: also skip explicit exclusions (loopback + link-local
+            // by default). Without this, anything binding to 127.0.0.1 with
+            // a fast poll loop (Gradle daemon, adb fork-server,
+            // systemd-resolved) accumulates beacon samples and trips the
+            // CoV detector — the original developer-tool outage.
+            if self.is_excluded(&conn.remote_ip) {
                 continue;
             }
 
@@ -906,5 +945,86 @@ impl ScanModule for NetworkModule {
 
     fn supports_watch(&self) -> bool {
         false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// v2.6.1 tests — pin the loopback / link-local exclusion behavior so a
+// future detector refactor can't silently re-introduce the gradle / adb
+// auto-block regression.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod excluded_destinations_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::net::Ipv4Addr;
+
+    fn module_with_defaults() -> NetworkModule {
+        let mut cfg = NetworkConfig::default();
+        // Make the time-series detector fire trivially: 1 sample is enough
+        // to "be a beacon" for the purposes of this test if it gets recorded.
+        cfg.c2_beacon_min_samples = 1;
+        cfg.c2_beacon_cov_threshold = 1.0;
+        cfg.c2_beacon_min_interval_secs = 0.0;
+        cfg.c2_beacon_max_interval_secs = 1e9;
+        NetworkModule::new_with_data_dir(cfg, std::env::temp_dir().join("aegis-net-test"))
+    }
+
+    fn loopback_conn(remote_port: u16) -> TcpConnection {
+        TcpConnection {
+            local_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            local_port: 54321,
+            remote_ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            remote_port,
+            state: tcp_state::ESTABLISHED,
+            inode: 0,
+        }
+    }
+
+    #[test]
+    fn loopback_destination_does_not_increment_c2_beacon_counter() {
+        // Simulates the gradle / adb scenario: dozens of fast loopback
+        // connections to a developer-tool fork-server. Pre-v2.6.1, the
+        // is_private filter already covered this — but this test pins it
+        // explicitly AND verifies the new excluded_destinations path runs
+        // even if is_private were ever weakened.
+        let module = module_with_defaults();
+        let inode_map: HashMap<u64, (u32, String)> = HashMap::new();
+        // 50 distinct ephemeral ports → would be 50 beacon samples without
+        // the exclusion.
+        let connections: Vec<TcpConnection> =
+            (40000u16..40050).map(loopback_conn).collect();
+
+        let threats = module.detect_c2_beacon(&connections, &inode_map);
+        assert!(
+            threats.is_empty(),
+            "C2 beacon detector must not flag loopback destinations; got {} threats",
+            threats.len()
+        );
+
+        // And the excluded helper itself agrees, so the response engine
+        // (which mirrors this list via new_with_extra_safety_pin) will
+        // also refuse to install a firewall rule.
+        assert!(module.is_excluded(&IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(module.is_excluded(&"::1".parse().unwrap()));
+        assert!(module.is_excluded(&"169.254.1.1".parse().unwrap()));
+        assert!(module.is_excluded(&"fe80::1".parse().unwrap()));
+        // Public IPs must NOT be excluded — protection against external
+        // attackers is unchanged.
+        assert!(!module.is_excluded(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!module.is_excluded(&IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    #[test]
+    fn loopback_destination_does_not_trigger_suspicious_outbound() {
+        let module = module_with_defaults();
+        let inode_map: HashMap<u64, (u32, String)> = HashMap::new();
+        let listen_ports: HashSet<u16> = HashSet::new();
+        // adb fork-server on 127.0.0.1:5037, gradle daemon on a random
+        // ephemeral port — both must produce zero alerts.
+        let connections = vec![loopback_conn(5037), loopback_conn(63919)];
+        let threats =
+            module.detect_suspicious_outbound(&connections, &inode_map, &listen_ports);
+        assert!(threats.is_empty());
     }
 }
