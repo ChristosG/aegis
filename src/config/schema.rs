@@ -574,6 +574,14 @@ pub struct WebConfig {
     /// Should be significantly higher than ddos_threshold.
     #[serde(default = "default_ddos_high_traffic_threshold")]
     pub ddos_high_traffic_threshold: u32,
+    /// Additional path prefixes to treat as static assets and exclude from
+    /// DDoS counting entirely. Merged with the built-in defaults
+    /// (`/_next/static/`, `/static/`, `/assets/`, common asset extensions
+    /// like `.ico`, `.css`, `.js`, `.woff2`, images, etc.). Browser SPAs
+    /// emit dozens of asset requests per page load; counting them as DDoS
+    /// traffic produces false positives on legitimate users.
+    #[serde(default)]
+    pub ddos_static_paths: Vec<String>,
 }
 
 impl Default for WebConfig {
@@ -599,6 +607,7 @@ impl Default for WebConfig {
             ],
             ddos_high_traffic_paths: Vec::new(),
             ddos_high_traffic_threshold: default_ddos_high_traffic_threshold(),
+            ddos_static_paths: Vec::new(),
         }
     }
 }

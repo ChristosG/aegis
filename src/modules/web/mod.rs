@@ -54,6 +54,72 @@ const WEBSOCKET_PATH_PREFIXES: &[&str] = &[
     "/hub",
 ];
 
+/// Static asset path prefixes — excluded from DDoS counting entirely.
+/// Modern SPAs (Next.js, Vite, Webpack, Nuxt) emit dozens of these per page
+/// load. Counting them as DDoS traffic causes false positives on legitimate
+/// browser users.
+const STATIC_ASSET_PATH_PREFIXES: &[&str] = &[
+    "/_next/static/",
+    "/_next/image",
+    "/_next/data/",
+    "/_nuxt/",
+    "/static/",
+    "/assets/",
+    "/public/",
+    "/build/",
+    "/dist/",
+];
+
+/// Static asset file extensions — excluded from DDoS counting entirely.
+/// Matched against the path portion of the request URL after stripping any
+/// query string. nginx serves these cheaply; an attacker fetching only static
+/// files cannot meaningfully harm the origin.
+const STATIC_ASSET_EXTENSIONS: &[&str] = &[
+    ".ico", ".css", ".js", ".mjs", ".map", ".json", ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".bmp", ".mp4", ".webm", ".mp3",
+    ".wav", ".ogg",
+];
+
+/// Server-Sent Events / streaming path prefixes — auto-classified as
+/// high-traffic (counted against `ddos_high_traffic_threshold`, not excluded,
+/// so a real flood of stream opens against e.g. a local vLLM server still
+/// trips the alarm).
+const SSE_PATH_PREFIXES: &[&str] = &[
+    "/sse",
+    "/events",
+    "/stream",
+    "/v1/chat/completions",
+    "/v1/completions",
+    "/api/chat",
+    "/api/stream",
+    "/api/sse",
+];
+
+/// Returns true if `path` (query-string stripped) is a static asset that
+/// should be excluded from DDoS counting.
+fn is_static_asset_path(path: &str, extra_prefixes: &[String]) -> bool {
+    if STATIC_ASSET_PATH_PREFIXES
+        .iter()
+        .any(|p| path.starts_with(p))
+    {
+        return true;
+    }
+    if extra_prefixes.iter().any(|p| path.starts_with(p.as_str())) {
+        return true;
+    }
+    // Extension match — lowercase the tail for case-insensitive comparison.
+    if let Some(dot_idx) = path.rfind('.') {
+        let ext = &path[dot_idx..];
+        // Fast ASCII lowercase comparison.
+        for known in STATIC_ASSET_EXTENSIONS {
+            if ext.eq_ignore_ascii_case(known) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Common scanner paths that indicate automated probing.
 const SCANNER_PATHS: &[&str] = &[
     "/wp-admin",
@@ -399,13 +465,43 @@ impl ScanModule for WebModule {
         let mut ip_user_agents: HashMap<String, HashSet<String>> = HashMap::new();
 
         for entry in &all_entries {
-            let request_path = entry.request.split_whitespace().nth(1).unwrap_or("");
+            let raw_path = entry.request.split_whitespace().nth(1).unwrap_or("");
+            // Strip query string for path classification — static assets
+            // often carry cache-busting query params (e.g. ?v=1.2.3).
+            let request_path = raw_path.split('?').next().unwrap_or(raw_path);
+
+            // Track paths and user agents per IP for DDoS enrichment.
+            // We populate this even for excluded static assets so that, if a
+            // real attack does fire, the forensic detail isn't degraded.
+            *ip_paths
+                .entry(entry.ip.clone())
+                .or_default()
+                .entry(request_path.to_string())
+                .or_insert(0) += 1;
+            ip_user_agents
+                .entry(entry.ip.clone())
+                .or_default()
+                .insert(entry.user_agent.clone());
+
+            // Static assets (favicons, /_next/static/*, *.css, *.js, fonts,
+            // images) are excluded from DDoS counting entirely. A single SPA
+            // page load can easily emit 100+ such requests; treating them as
+            // attack traffic was the source of the user-reported false
+            // positives.
+            if is_static_asset_path(request_path, &self.config.ddos_static_paths) {
+                continue;
+            }
+
             let is_ws_status = entry.status == 101;
             let is_ws_path = WEBSOCKET_PATH_PREFIXES
                 .iter()
                 .any(|p| request_path.starts_with(p));
+            let is_sse_path = SSE_PATH_PREFIXES
+                .iter()
+                .any(|p| request_path.starts_with(p));
             let is_ht = is_ws_status
                 || is_ws_path
+                || is_sse_path
                 || (!ht_paths.is_empty()
                     && ht_paths
                         .iter()
@@ -423,17 +519,6 @@ impl ScanModule for WebModule {
             if let Some(ts) = parse_nginx_timestamp(&entry.timestamp) {
                 ip_timestamps.entry(entry.ip.clone()).or_default().push(ts);
             }
-
-            // Track paths and user agents per IP for DDoS enrichment
-            *ip_paths
-                .entry(entry.ip.clone())
-                .or_default()
-                .entry(request_path.to_string())
-                .or_insert(0) += 1;
-            ip_user_agents
-                .entry(entry.ip.clone())
-                .or_default()
-                .insert(entry.user_agent.clone());
         }
 
         // Check normal-path requests against standard threshold
@@ -562,6 +647,7 @@ mod tests {
             scanner_agents: vec!["nikto".into(), "sqlmap".into(), "nmap".into()],
             ddos_high_traffic_paths: Vec::new(),
             ddos_high_traffic_threshold: 2000,
+            ddos_static_paths: Vec::new(),
         }
     }
 
@@ -876,6 +962,203 @@ mod tests {
         assert!(
             !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
             "WebSocket path traffic should not trigger DDoS at normal threshold"
+        );
+    }
+
+    #[test]
+    fn test_is_static_asset_path_classifier() {
+        let no_extra: Vec<String> = Vec::new();
+        // Built-in path prefixes
+        assert!(is_static_asset_path(
+            "/_next/static/chunks/foo.js",
+            &no_extra
+        ));
+        assert!(is_static_asset_path("/static/app.css", &no_extra));
+        assert!(is_static_asset_path("/assets/logo.svg", &no_extra));
+        // Built-in extensions
+        assert!(is_static_asset_path("/favicon.ico", &no_extra));
+        assert!(is_static_asset_path("/anything.css", &no_extra));
+        assert!(is_static_asset_path("/fonts/sans.woff2", &no_extra));
+        assert!(is_static_asset_path("/img/photo.JPG", &no_extra)); // case-insensitive
+                                                                    // Non-asset paths
+        assert!(!is_static_asset_path("/", &no_extra));
+        assert!(!is_static_asset_path("/api/data", &no_extra));
+        assert!(!is_static_asset_path("/login", &no_extra));
+        // User-supplied extra prefix
+        let extra = vec!["/cdn/".to_string()];
+        assert!(is_static_asset_path("/cdn/anything", &extra));
+        assert!(!is_static_asset_path("/cdn/anything", &no_extra));
+    }
+
+    #[test]
+    fn test_favicon_flood_does_not_trigger_ddos() {
+        // The user-reported false positive: a Next.js page repeatedly
+        // requesting /favicon.ico must NOT trigger a DDoS alert.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..300u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "5.203.157.175",
+                "GET /favicon.ico HTTP/1.1",
+                200,
+                "Mozilla/5.0 (Linux; Android 16) Mobile Safari/537.36",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "Repeated favicon.ico requests must not trigger DDoS"
+        );
+    }
+
+    #[test]
+    fn test_next_static_chunks_do_not_trigger_ddos() {
+        // SPAs (Next.js, Webpack) emit dozens of /_next/static/* requests per
+        // page load. These must be excluded from DDoS counting.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..300u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "5.203.157.175",
+                "GET /_next/static/chunks/foo.js HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "/_next/static/* requests must not trigger DDoS"
+        );
+    }
+
+    #[test]
+    fn test_real_world_mixed_page_load_does_not_trigger_ddos() {
+        // Reproduce the user-reported event:
+        // 165 favicon.ico + 50 /api/data interleaved over 46 s.
+        // The static favicon hits are excluded; the 50 /api/data hits
+        // (~65 RPM over 46 s) stay under the 100/min test threshold → no DDoS.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..165u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "5.203.157.175",
+                "GET /favicon.ico HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 46,
+            ));
+            content.push('\n');
+        }
+        for i in 0..50u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "5.203.157.175",
+                "GET /api/data HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 46,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "Mixed page load (favicon + light API) must not trigger DDoS"
+        );
+    }
+
+    #[test]
+    fn test_sse_path_uses_high_traffic_threshold() {
+        // 300 requests to /v1/chat/completions over 60 s → 300 RPM.
+        // Auto-detected as SSE/streaming → uses high-traffic threshold (2000),
+        // so no DDoS at this rate.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..300u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "10.0.0.60",
+                "POST /v1/chat/completions HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let config = test_config(log_path.to_str().unwrap());
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "SSE/chat completions path must not trigger DDoS at normal threshold"
+        );
+    }
+
+    #[test]
+    fn test_static_query_string_stripped() {
+        // Cache-busted asset like /app.css?v=1.2.3 must still be classified
+        // as static (the query string is stripped before extension match).
+        let no_extra: Vec<String> = Vec::new();
+        // The classifier sees the path after query stripping happens in the
+        // detection loop, so confirm both forms here.
+        assert!(is_static_asset_path("/app.css", &no_extra));
+        // Bare path with query-string-like extension portion would not match
+        // — but the loop strips the query before calling, so this is a
+        // documentation test, not a regression check.
+    }
+
+    #[test]
+    fn test_user_configured_static_path_excluded() {
+        // User adds /cdn/ to ddos_static_paths in aegis.toml. 300 requests
+        // there over 60 s should not flag, even though they're high-volume.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut content = String::new();
+        for i in 0..300u32 {
+            content.push_str(&sample_log_line_at_sec(
+                "10.0.0.61",
+                "GET /cdn/image-no-extension HTTP/1.1",
+                200,
+                "Mozilla/5.0",
+                i % 60,
+            ));
+            content.push('\n');
+        }
+        std::fs::write(&log_path, content).unwrap();
+
+        let mut config = test_config(log_path.to_str().unwrap());
+        config.ddos_static_paths = vec!["/cdn/".to_string()];
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "User-configured static paths must be excluded from DDoS counting"
         );
     }
 

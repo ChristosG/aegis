@@ -13,8 +13,8 @@ use crate::config::schema::NetworkConfig;
 use crate::core::threat::{ThreatEvent, ThreatType};
 use crate::modules::ScanModule;
 use crate::util::ip::{is_private, is_whitelisted, parse_whitelist};
-use ipnet::IpNet;
 use crate::util::proc_parse::{parse_tcp_line, tcp_state};
+use ipnet::IpNet;
 
 use beacon_history::{exe_path_for_pid, history_file_path, BeaconHistory, BeaconKey};
 
@@ -992,8 +992,7 @@ mod excluded_destinations_tests {
         let inode_map: HashMap<u64, (u32, String)> = HashMap::new();
         // 50 distinct ephemeral ports → would be 50 beacon samples without
         // the exclusion.
-        let connections: Vec<TcpConnection> =
-            (40000u16..40050).map(loopback_conn).collect();
+        let connections: Vec<TcpConnection> = (40000u16..40050).map(loopback_conn).collect();
 
         let threats = module.detect_c2_beacon(&connections, &inode_map);
         assert!(
@@ -1023,8 +1022,7 @@ mod excluded_destinations_tests {
         // adb fork-server on 127.0.0.1:5037, gradle daemon on a random
         // ephemeral port — both must produce zero alerts.
         let connections = vec![loopback_conn(5037), loopback_conn(63919)];
-        let threats =
-            module.detect_suspicious_outbound(&connections, &inode_map, &listen_ports);
+        let threats = module.detect_suspicious_outbound(&connections, &inode_map, &listen_ports);
         assert!(threats.is_empty());
     }
 }

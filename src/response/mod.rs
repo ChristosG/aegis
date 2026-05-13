@@ -957,7 +957,12 @@ impl ResponseEngine {
         // circuit a `[response.overrides] reverse_shell = "kill"` would still
         // kill the developer's process — defeating the demotion.
         // See incident 20260509004453373-1434.
-        if event.details.get("degraded_by_dev_parent").map(String::as_str) == Some("true") {
+        if event
+            .details
+            .get("degraded_by_dev_parent")
+            .map(String::as_str)
+            == Some("true")
+        {
             return match event.severity {
                 crate::core::threat::ThreatSeverity::Info
                 | crate::core::threat::ThreatSeverity::Low => ResponseAction::Log,
@@ -1679,13 +1684,9 @@ mod tests {
             Self::for_test_with_extra_safety_pin(config, &[])
         }
 
-        fn for_test_with_extra_safety_pin(
-            config: ResponseConfig,
-            extra: &[String],
-        ) -> Self {
+        fn for_test_with_extra_safety_pin(config: ResponseConfig, extra: &[String]) -> Self {
             let whitelist = ip::parse_whitelist(&config.whitelist);
-            let mut well_known_destinations =
-                ip::parse_whitelist(&config.well_known_destinations);
+            let mut well_known_destinations = ip::parse_whitelist(&config.well_known_destinations);
             well_known_destinations.extend(ip::parse_whitelist(extra));
             let zero_tolerance_threats: HashSet<String> =
                 config.zero_tolerance_threats.iter().cloned().collect();
@@ -1893,7 +1894,13 @@ mod tests {
         let engine = ResponseEngine::for_test_with_extra_safety_pin(config, &extra);
         let mut state = default_state();
 
-        for ip_str in &["127.0.0.1", "127.5.5.5", "::1", "169.254.10.20", "fe80::abcd"] {
+        for ip_str in &[
+            "127.0.0.1",
+            "127.5.5.5",
+            "::1",
+            "169.254.10.20",
+            "fe80::abcd",
+        ] {
             let ip: IpAddr = ip_str.parse().unwrap();
             let outcome = engine
                 .block_ip(ip, "test loopback", Some("c2_beacon"), &mut state)

@@ -194,10 +194,7 @@ fn validate_process(config: &AegisConfig, result: &mut ValidationResult) {
     // demotion for that name.
     for entry in &config.process.dev_parent_allowlist {
         let trimmed = entry.trim();
-        if trimmed.is_empty()
-            || trimmed.contains('/')
-            || trimmed.contains('\\')
-            || trimmed != entry
+        if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') || trimmed != entry
         {
             result.warnings.push(format!(
                 "[process] dev_parent_allowlist entry '{}' is path-like or has whitespace; \

