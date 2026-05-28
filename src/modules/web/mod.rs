@@ -95,6 +95,62 @@ const SSE_PATH_PREFIXES: &[&str] = &[
     "/api/sse",
 ];
 
+/// Pick the per-endpoint rule that applies to `path`, if any.
+///
+/// Returns the index of the winning rule in `rules`, or `None` if no rule matches.
+///
+/// **Match semantics (longest-match wins, exact beats prefix on ties):**
+/// 1. Iterate every rule and find the ones that match `path`:
+///    - `match_type == "exact"`  → rule.path must equal `path`
+///    - `match_type == "prefix"` → `path` must start with `rule.path`
+///    - any other `match_type` → ignored (validation rejects it at startup)
+/// 2. Among matchers, pick the one with the **longest `rule.path`**.
+/// 3. If two rules tie on length, the one with `match_type == "exact"` wins.
+/// 4. If still tied, the earlier index in `rules` wins (stable, deterministic).
+///
+/// ┌──────────────────────────────────────────────────────────────────────┐
+/// │  ⚠  CHRIS — security-critical core. The unit tests in `mod tests`    │
+/// │  below (search for `test_pick_endpoint_rule_*`) are the spec — you   │
+/// │  own them. Add cases that lock in the invariants above, especially   │
+/// │  the tie-breakers. The current implementation is my first cut; if    │
+/// │  your tests catch a bug, fix the function, not the test.             │
+/// └──────────────────────────────────────────────────────────────────────┘
+pub fn pick_endpoint_rule(
+    path: &str,
+    rules: &[crate::config::schema::EndpointThreshold],
+) -> Option<usize> {
+    let mut best: Option<(usize, usize, bool)> = None; // (idx, path_len, is_exact)
+    for (i, r) in rules.iter().enumerate() {
+        let matched = match r.match_type.as_str() {
+            "exact" => r.path == path,
+            "prefix" => path.starts_with(r.path.as_str()),
+            _ => false,
+        };
+        if !matched {
+            continue;
+        }
+        let is_exact = r.match_type == "exact";
+        let len = r.path.len();
+        let take = match best {
+            None => true,
+            Some((_, blen, bexact)) => {
+                if len > blen {
+                    true
+                } else if len == blen {
+                    // Exact beats prefix on equal length.
+                    is_exact && !bexact
+                } else {
+                    false
+                }
+            }
+        };
+        if take {
+            best = Some((i, len, is_exact));
+        }
+    }
+    best.map(|(i, _, _)| i)
+}
+
 /// Returns true if `path` (query-string stripped) is a static asset that
 /// should be excluded from DDoS counting.
 fn is_static_asset_path(path: &str, extra_prefixes: &[String]) -> bool {
@@ -458,9 +514,15 @@ impl ScanModule for WebModule {
         // High-traffic paths (WebSocket, chat, streaming) use a separate,
         // higher threshold to avoid false positives on legitimate real-time traffic.
         let ht_paths = &self.config.ddos_high_traffic_paths;
+        let endpoint_rules = &self.config.endpoint_thresholds;
         let mut ip_timestamps: HashMap<String, Vec<i64>> = HashMap::new();
         let mut ip_request_count: HashMap<String, u64> = HashMap::new();
         let mut ip_ht_count: HashMap<String, u64> = HashMap::new();
+        // Per-endpoint counts keyed by (ip, rule_idx). A request matching an
+        // endpoint rule is counted ONLY against that rule (not against
+        // normal/HT) — operators who declare a rule are explicitly opting that
+        // path out of the global thresholds.
+        let mut ip_endpoint_count: HashMap<(String, usize), u64> = HashMap::new();
         let mut ip_paths: HashMap<String, HashMap<String, u32>> = HashMap::new();
         let mut ip_user_agents: HashMap<String, HashSet<String>> = HashMap::new();
 
@@ -489,6 +551,18 @@ impl ScanModule for WebModule {
             // attack traffic was the source of the user-reported false
             // positives.
             if is_static_asset_path(request_path, &self.config.ddos_static_paths) {
+                continue;
+            }
+
+            // Per-endpoint rule overrides — if a rule matches, count there
+            // and skip the normal/HT classification.
+            if let Some(rule_idx) = pick_endpoint_rule(request_path, endpoint_rules) {
+                *ip_endpoint_count
+                    .entry((entry.ip.clone(), rule_idx))
+                    .or_insert(0) += 1;
+                if let Some(ts) = parse_nginx_timestamp(&entry.timestamp) {
+                    ip_timestamps.entry(entry.ip.clone()).or_default().push(ts);
+                }
                 continue;
             }
 
@@ -526,59 +600,136 @@ impl ScanModule for WebModule {
         let ht_threshold = self.config.ddos_high_traffic_threshold as u64;
 
         // Merge counts: flag if EITHER normal exceeds normal threshold
-        // OR high-traffic exceeds high-traffic threshold.
-        let mut all_ips: std::collections::HashSet<&String> = ip_request_count.keys().collect();
-        all_ips.extend(ip_ht_count.keys());
+        // OR high-traffic exceeds high-traffic threshold
+        // OR any per-endpoint rule's count exceeds its rule threshold.
+        let mut all_ips: std::collections::HashSet<String> =
+            ip_request_count.keys().cloned().collect();
+        all_ips.extend(ip_ht_count.keys().cloned());
+        all_ips.extend(ip_endpoint_count.keys().map(|(ip, _)| ip.clone()));
 
         for ip_str in &all_ips {
-            let normal_count = ip_request_count.get(*ip_str).copied().unwrap_or(0);
-            let ht_count = ip_ht_count.get(*ip_str).copied().unwrap_or(0);
-            let total_count = normal_count + ht_count;
+            let normal_count = ip_request_count.get(ip_str).copied().unwrap_or(0);
+            let ht_count = ip_ht_count.get(ip_str).copied().unwrap_or(0);
+            // Sum per-endpoint counts for this IP for the total/RPM math.
+            let ep_total: u64 = ip_endpoint_count
+                .iter()
+                .filter(|((ip, _), _)| ip == ip_str)
+                .map(|(_, c)| *c)
+                .sum();
+            let total_count = normal_count + ht_count + ep_total;
             let mut flagged = false;
             let mut effective_threshold = ddos_threshold;
+            // Track which endpoint rule (if any) is the binding constraint, so
+            // the threat description can name it.
+            let mut binding_endpoint: Option<usize> = None;
 
-            // Determine which threshold applies
+            // Determine which threshold applies (normal vs HT bucket).
             if ht_count > normal_count && ht_threshold > 0 {
-                // Mostly high-traffic path requests — use higher threshold
                 effective_threshold = ht_threshold;
             }
 
-            // If we have timestamps spanning a meaningful window, calculate RPM.
-            // Require >= 10 s to avoid extrapolating short page-load bursts
-            // (e.g. 36 reqs in 3 s → 720 RPM) into false DDoS positives.
-            if let Some(timestamps) = ip_timestamps.get(*ip_str) {
+            // Per-endpoint check: any (ip, rule) that exceeds rule.threshold flags the IP.
+            // We pick the worst overage as the "binding" rule for the description.
+            let mut worst_overage: f64 = 0.0;
+            for ((ip, rule_idx), count) in &ip_endpoint_count {
+                if ip != ip_str {
+                    continue;
+                }
+                let rule = match endpoint_rules.get(*rule_idx) {
+                    Some(r) => r,
+                    None => continue,
+                };
+                let rule_threshold = rule.threshold as u64;
+                if rule_threshold == 0 {
+                    continue;
+                }
+                // RPM extrapolation if we have a meaningful window; else raw count.
+                let exceeds_rpm = if let Some(timestamps) = ip_timestamps.get(ip_str) {
+                    if timestamps.len() >= 2 {
+                        let min_ts = *timestamps.iter().min().unwrap();
+                        let max_ts = *timestamps.iter().max().unwrap();
+                        let duration_secs = max_ts - min_ts;
+                        if duration_secs >= 10 {
+                            let rpm = (*count as f64 / duration_secs as f64) * 60.0;
+                            rpm >= rule_threshold as f64
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                let exceeds_raw = *count >= rule_threshold;
+                if exceeds_rpm || exceeds_raw {
+                    let overage = *count as f64 / rule_threshold as f64;
+                    if overage > worst_overage {
+                        worst_overage = overage;
+                        binding_endpoint = Some(*rule_idx);
+                        effective_threshold = rule_threshold;
+                    }
+                    flagged = true;
+                }
+            }
+
+            // Normal-bucket check: only count traffic that DIDN'T match an
+            // endpoint rule against the global threshold. Endpoint-bucket
+            // traffic has already been checked against its own rule above.
+            let uncovered_count = normal_count + ht_count;
+            if let Some(timestamps) = ip_timestamps.get(ip_str) {
                 if timestamps.len() >= 2 {
                     let min_ts = *timestamps.iter().min().unwrap();
                     let max_ts = *timestamps.iter().max().unwrap();
                     let duration_secs = max_ts - min_ts;
                     if duration_secs >= 10 {
-                        let rpm = (total_count as f64 / duration_secs as f64) * 60.0;
-                        if rpm >= effective_threshold as f64 {
+                        let rpm = (uncovered_count as f64 / duration_secs as f64) * 60.0;
+                        if rpm >= effective_threshold as f64 && uncovered_count > 0 {
                             flagged = true;
                         }
                     }
                 }
             }
 
-            // Fallback: if total count alone exceeds threshold, flag it
-            if !flagged && total_count >= effective_threshold {
+            // Fallback: if uncovered (non-endpoint-rule) count alone exceeds
+            // the global threshold, flag it.
+            if !flagged && uncovered_count >= effective_threshold {
                 flagged = true;
             }
 
             let count = &total_count;
 
             if flagged {
-                let description = format!(
-                    "Potential DDoS: {} sent {} requests (threshold: {}/min)",
-                    ip_str, count, effective_threshold
-                );
+                let description = if let Some(rule_idx) = binding_endpoint {
+                    let rule = &endpoint_rules[rule_idx];
+                    let rule_count = ip_endpoint_count
+                        .get(&(ip_str.clone(), rule_idx))
+                        .copied()
+                        .unwrap_or(0);
+                    format!(
+                        "Potential DDoS: {} sent {} requests to {} (rule threshold: {}/min)",
+                        ip_str, rule_count, rule.path, rule.threshold
+                    )
+                } else {
+                    format!(
+                        "Potential DDoS: {} sent {} requests (threshold: {}/min)",
+                        ip_str, count, effective_threshold
+                    )
+                };
 
                 let mut event = ThreatEvent::new(ThreatType::WebDdos, "web", description)
                     .with_detail("request_count", count.to_string())
                     .with_detail("threshold", effective_threshold.to_string());
 
+                if let Some(rule_idx) = binding_endpoint {
+                    let rule = &endpoint_rules[rule_idx];
+                    event = event
+                        .with_detail("matched_endpoint", rule.path.clone())
+                        .with_detail("endpoint_match_type", rule.match_type.clone());
+                }
+
                 // Enrich with top paths
-                if let Some(paths) = ip_paths.get(*ip_str) {
+                if let Some(paths) = ip_paths.get(ip_str) {
                     let mut path_vec: Vec<(&String, &u32)> = paths.iter().collect();
                     path_vec.sort_by(|a, b| b.1.cmp(a.1));
                     let top_paths: Vec<String> = path_vec
@@ -590,14 +741,14 @@ impl ScanModule for WebModule {
                 }
 
                 // Enrich with unique user agents
-                if let Some(agents) = ip_user_agents.get(*ip_str) {
+                if let Some(agents) = ip_user_agents.get(ip_str) {
                     let ua_list: Vec<&String> = agents.iter().take(5).collect();
                     let ua_str: Vec<&str> = ua_list.iter().map(|s| s.as_str()).collect();
                     event = event.with_detail("user_agents", ua_str.join(", "));
                 }
 
                 // Enrich with time window and RPM
-                if let Some(timestamps) = ip_timestamps.get(*ip_str) {
+                if let Some(timestamps) = ip_timestamps.get(ip_str) {
                     if timestamps.len() >= 2 {
                         let min_ts = *timestamps.iter().min().unwrap();
                         let max_ts = *timestamps.iter().max().unwrap();
@@ -648,6 +799,7 @@ mod tests {
             ddos_high_traffic_paths: Vec::new(),
             ddos_high_traffic_threshold: 2000,
             ddos_static_paths: Vec::new(),
+            endpoint_thresholds: Vec::new(),
         }
     }
 
@@ -1188,6 +1340,177 @@ mod tests {
         assert!(
             threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
             "Normal path traffic should still trigger DDoS above threshold"
+        );
+    }
+
+    // ─── Per-endpoint threshold matcher tests ─────────────────────────────
+    // These lock the longest-match / exact-beats-prefix semantics of
+    // pick_endpoint_rule(). Behavior here defines the security policy:
+    // if a test fails, fix the matcher, not the test.
+
+    fn ep(
+        path: &str,
+        threshold: u32,
+        match_type: &str,
+    ) -> crate::config::schema::EndpointThreshold {
+        crate::config::schema::EndpointThreshold {
+            path: path.into(),
+            threshold,
+            match_type: match_type.into(),
+        }
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_empty_returns_none() {
+        assert_eq!(pick_endpoint_rule("/api/anything", &[]), None);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_no_match_returns_none() {
+        let rules = vec![
+            ep("/api/admin/", 30, "prefix"),
+            ep("/api/login", 10, "exact"),
+        ];
+        assert_eq!(pick_endpoint_rule("/health", &rules), None);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_longest_prefix_wins() {
+        // Operator-trap case: a broad /api/ rule shouldn't shield /api/admin/.
+        let rules = vec![ep("/api/", 500, "prefix"), ep("/api/admin/", 30, "prefix")];
+        let idx = pick_endpoint_rule("/api/admin/users", &rules).unwrap();
+        assert_eq!(rules[idx].path, "/api/admin/");
+        assert_eq!(rules[idx].threshold, 30);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_exact_beats_prefix_same_length() {
+        // /api/login as exact AND prefix — exact must win on equal length so
+        // an operator can pin a tight ceiling on a path covered by a broader rule.
+        let rules = vec![
+            ep("/api/login", 100, "prefix"),
+            ep("/api/login", 10, "exact"),
+        ];
+        let idx = pick_endpoint_rule("/api/login", &rules).unwrap();
+        assert_eq!(rules[idx].match_type, "exact");
+        assert_eq!(rules[idx].threshold, 10);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_exact_does_not_match_subpath() {
+        // /api/login (exact) must NOT match /api/login/foo — exact means exact.
+        let rules = vec![ep("/api/login", 10, "exact")];
+        assert_eq!(pick_endpoint_rule("/api/login/foo", &rules), None);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_prefix_matches_subpath() {
+        let rules = vec![ep("/api/admin/", 30, "prefix")];
+        let idx = pick_endpoint_rule("/api/admin/users/42", &rules).unwrap();
+        assert_eq!(rules[idx].path, "/api/admin/");
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_no_substring_attack() {
+        // Without a leading slash a rule should never silently match — the
+        // request path always starts with `/`. (Validation rejects this at
+        // startup, but defense in depth.)
+        let rules = vec![ep("api/admin/", 30, "prefix")];
+        // "api/admin/" is not a prefix of "/api/admin/..." (the leading slash differs).
+        assert_eq!(pick_endpoint_rule("/api/admin/users", &rules), None);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_unknown_match_type_ignored() {
+        // Validation rejects this, but the matcher must be safe regardless.
+        let rules = vec![ep("/api/", 10, "regex")];
+        assert_eq!(pick_endpoint_rule("/api/anything", &rules), None);
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_stable_on_tie() {
+        // Two identical rules → earlier index wins (deterministic).
+        let rules = vec![
+            ep("/api/foo/", 100, "prefix"),
+            ep("/api/foo/", 50, "prefix"),
+        ];
+        assert_eq!(pick_endpoint_rule("/api/foo/x", &rules), Some(0));
+    }
+
+    #[test]
+    fn test_pick_endpoint_rule_trailing_slash_matters_for_prefix() {
+        // "/api/admin" (no trailing /) is a prefix of "/api/administrator"
+        // — operators must use "/api/admin/" if they want directory semantics.
+        // This locks in the literal-prefix behavior; documented in the WebUI.
+        let rules = vec![ep("/api/admin", 30, "prefix")];
+        assert!(pick_endpoint_rule("/api/administrator", &rules).is_some());
+        let rules_slash = vec![ep("/api/admin/", 30, "prefix")];
+        assert!(pick_endpoint_rule("/api/administrator", &rules_slash).is_none());
+    }
+
+    #[test]
+    fn test_endpoint_rule_integration_polling_no_false_positive() {
+        // The actual scenario from chris's mobile: 368 reqs to a single
+        // polling endpoint over a 60s window. Without a rule it trips at
+        // 200/min; with a rule of 500/min it must not flag.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut lines = Vec::new();
+        for i in 0..380 {
+            lines.push(sample_log_line_at_sec(
+                "31.152.225.116",
+                "GET /api/positions/integrity HTTP/1.1",
+                200,
+                "Mozilla/5.0 (Mobile)",
+                (i % 60) as u32,
+            ));
+        }
+        std::fs::write(&log_path, lines.join("\n")).unwrap();
+
+        let mut config = test_config(&log_path.to_string_lossy());
+        config.endpoint_thresholds = vec![ep("/api/positions/integrity", 500, "exact")];
+
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        assert!(
+            !threats.iter().any(|t| t.threat_type == ThreatType::WebDdos),
+            "Endpoint rule with high threshold must prevent the false positive"
+        );
+    }
+
+    #[test]
+    fn test_endpoint_rule_integration_attack_still_flagged() {
+        // Same path but >500 rpm → must still fire, and the binding rule
+        // must be named in the threat detail.
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("access.log");
+        let mut lines = Vec::new();
+        // 600 requests inside 30 seconds → ~1200 rpm against a 500/min rule.
+        for i in 0..600 {
+            lines.push(sample_log_line_at_sec(
+                "9.9.9.9",
+                "GET /api/positions/integrity HTTP/1.1",
+                200,
+                "curl/8",
+                (i % 30) as u32,
+            ));
+        }
+        std::fs::write(&log_path, lines.join("\n")).unwrap();
+
+        let mut config = test_config(&log_path.to_string_lossy());
+        config.endpoint_thresholds = vec![ep("/api/positions/integrity", 500, "exact")];
+
+        let module = WebModule::new(config, dir.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let threats = rt.block_on(module.scan()).unwrap();
+        let ddos = threats
+            .iter()
+            .find(|t| t.threat_type == ThreatType::WebDdos)
+            .expect("attack above rule threshold must flag");
+        assert_eq!(
+            ddos.details.get("matched_endpoint").map(String::as_str),
+            Some("/api/positions/integrity")
         );
     }
 }

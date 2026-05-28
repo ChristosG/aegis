@@ -2521,3 +2521,249 @@ function restartAegis() {
 (function() {
     if (document.getElementById('config-sections')) renderConfigPage();
 })();
+
+// === Web Rules page ===
+// All DOM constructed via buildNodes/createElement; no innerHTML (XSS-safe).
+
+function wrSetMsg(id, text, kind) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = '';
+    if (!text) return;
+    var span = document.createElement('span');
+    span.textContent = text;
+    if (kind === 'error') span.className = 'error';
+    else if (kind === 'ok') span.style.color = '#3fb950';
+    else if (kind === 'warn') span.style.color = '#d29922';
+    el.appendChild(span);
+}
+
+function webRulesRefresh() {
+    fetch('/api/web-rules?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var tbl = document.getElementById('wr-table');
+            if (!tbl) return;
+            tbl.textContent = '';
+            if (!data.rules || data.rules.length === 0) {
+                var p = document.createElement('p');
+                p.className = 'muted';
+                p.textContent = 'No per-endpoint rules configured. The global threshold (' +
+                    data.ddos_threshold + '/min) applies to everything.';
+                tbl.appendChild(p);
+                return;
+            }
+            var rowSpecs = data.rules.map(function(r) {
+                return { tag: 'tr', children: [
+                    { tag: 'td', children: [{ tag: 'code', text: r.path }] },
+                    { tag: 'td', text: r.match_type },
+                    { tag: 'td', text: r.threshold + ' /min' },
+                    { tag: 'td', children: [{
+                        tag: 'button', cls: 'btn-danger', text: 'Remove',
+                        onclick: (function(idx) { return function() { webRulesDelete(idx); }; })(r.index)
+                    }]}
+                ]};
+            });
+            buildNodes([
+                { tag: 'table', cls: 'data-table', children: [
+                    { tag: 'thead', children: [{ tag: 'tr', children: [
+                        { tag: 'th', text: 'Path' },
+                        { tag: 'th', text: 'Match' },
+                        { tag: 'th', text: 'Threshold' },
+                        { tag: 'th', text: '' }
+                    ]}]},
+                    { tag: 'tbody', children: rowSpecs }
+                ]},
+                { tag: 'p', cls: 'muted', text:
+                    'Global default: ' + data.ddos_threshold + '/min  ·  ' +
+                    'High-traffic auto-detect: ' + data.ddos_high_traffic_threshold + '/min' }
+            ], tbl);
+        })
+        .catch(function(err) {
+            var tbl = document.getElementById('wr-table');
+            if (!tbl) return;
+            tbl.textContent = '';
+            var p = document.createElement('p');
+            p.className = 'error';
+            p.textContent = 'Failed to load: ' + String(err);
+            tbl.appendChild(p);
+        });
+}
+
+function webRulesAdd() {
+    var path = document.getElementById('wr-new-path').value.trim();
+    var threshold = parseInt(document.getElementById('wr-new-threshold').value, 10);
+    var matchType = document.getElementById('wr-new-matchtype').value;
+
+    if (!path || !path.startsWith('/')) {
+        wrSetMsg('wr-add-result', 'Path must start with /', 'error');
+        return;
+    }
+    if (!threshold || threshold < 1) {
+        wrSetMsg('wr-add-result', 'Threshold must be a positive integer', 'error');
+        return;
+    }
+
+    fetch('/api/web-rules?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, threshold: threshold, match_type: matchType })
+    })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (res.status === 'ok') {
+                wrSetMsg('wr-add-result', 'Added. Restart aegis for it to take effect.', 'ok');
+                document.getElementById('wr-new-path').value = '';
+                document.getElementById('wr-new-threshold').value = '';
+                webRulesRefresh();
+            } else {
+                wrSetMsg('wr-add-result', res.message || 'unknown error', 'error');
+            }
+        })
+        .catch(function(err) {
+            wrSetMsg('wr-add-result', String(err), 'error');
+        });
+}
+
+function webRulesDelete(idx) {
+    showConfirm('Remove rule', 'Remove this endpoint threshold? Aegis will need to restart to fully pick up the change.', function() {
+        fetch('/api/web-rules/' + idx + '?token=' + API_TOKEN, { method: 'DELETE' })
+            .then(function(r) { return r.json(); })
+            .then(function(res) {
+                if (res.status === 'ok') {
+                    webRulesRefresh();
+                } else {
+                    showResult('Remove failed', res.message || 'unknown error', true);
+                }
+            })
+            .catch(function(err) {
+                showResult('Remove failed', String(err), true);
+            });
+    });
+}
+
+function webRulesTestPath() {
+    var path = document.getElementById('wr-test-input').value.trim();
+    var out = document.getElementById('wr-test-result');
+    if (!out) return;
+    out.textContent = '';
+    if (!path) return;
+    fetch('/api/web-rules/test?path=' + encodeURIComponent(path) + '&token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (res.matched) {
+                buildNodes([
+                    { tag: 'span', text: '✓ matches ' },
+                    { tag: 'code', text: res.rule.path },
+                    { tag: 'span', text: ' (' + res.rule.match_type + ') → ' },
+                    { tag: 'b', text: res.rule.threshold + ' req/min' }
+                ], out);
+                out.style.color = '#3fb950';
+            } else {
+                buildNodes([
+                    { tag: 'span', text: 'No rule matched. Falls back to global threshold: ' },
+                    { tag: 'b', text: res.effective_threshold + ' req/min' }
+                ], out);
+                out.style.color = '#d29922';
+            }
+        })
+        .catch(function(err) {
+            var s = document.createElement('span');
+            s.className = 'error';
+            s.textContent = String(err);
+            out.appendChild(s);
+        });
+}
+
+function webRulesSuggest() {
+    var box = document.getElementById('wr-suggest-result');
+    if (!box) return;
+    box.textContent = '';
+    var loading = document.createElement('p');
+    loading.className = 'muted';
+    loading.textContent = 'Scanning access log…';
+    box.appendChild(loading);
+
+    fetch('/api/web-rules/suggest?token=' + API_TOKEN)
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            box.textContent = '';
+            if (!res.suggestions || res.suggestions.length === 0) {
+                var p = document.createElement('p');
+                p.className = 'muted';
+                p.textContent = 'No suggestions — no path showed a high per-IP count from a small number of clients. Either nothing is polling heavily, or your rules already cover it.';
+                box.appendChild(p);
+                return;
+            }
+            window._wrSuggestions = res.suggestions;
+            var rowSpecs = res.suggestions.map(function(s, i) {
+                return { tag: 'tr', children: [
+                    { tag: 'td', children: [{ tag: 'code', text: s.path }] },
+                    { tag: 'td', text: String(s.max_requests_per_ip) },
+                    { tag: 'td', text: String(s.unique_ips) },
+                    { tag: 'td', text: s.recommended_threshold + '/min' },
+                    { tag: 'td', children: [{
+                        tag: 'button', text: 'Add',
+                        onclick: (function(idx) { return function() { webRulesAddSuggestion(idx); }; })(i)
+                    }]}
+                ]};
+            });
+            buildNodes([{
+                tag: 'table', cls: 'data-table', children: [
+                    { tag: 'thead', children: [{ tag: 'tr', children: [
+                        { tag: 'th', text: 'Path' },
+                        { tag: 'th', text: 'Max/IP' },
+                        { tag: 'th', text: 'Unique IPs' },
+                        { tag: 'th', text: 'Recommend' },
+                        { tag: 'th', text: '' }
+                    ]}]},
+                    { tag: 'tbody', children: rowSpecs }
+                ]
+            }], box);
+        })
+        .catch(function(err) {
+            box.textContent = '';
+            var p = document.createElement('p');
+            p.className = 'error';
+            p.textContent = String(err);
+            box.appendChild(p);
+        });
+}
+
+function webRulesAddSuggestion(i) {
+    var s = (window._wrSuggestions || [])[i];
+    if (!s) return;
+    fetch('/api/web-rules?token=' + API_TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            path: s.path,
+            threshold: s.recommended_threshold,
+            match_type: s.recommended_match_type || 'exact'
+        })
+    })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (res.status === 'ok') {
+                webRulesRefresh();
+                webRulesSuggest();
+            } else {
+                showResult('Add failed', res.message || 'unknown error', true);
+            }
+        });
+}
+
+// Auto-init web rules page
+(function() {
+    if (document.getElementById('wr-table')) {
+        webRulesRefresh();
+        var cl = document.getElementById('wr-config-link');
+        if (cl) cl.href = '/config?token=' + API_TOKEN;
+        var inp = document.getElementById('wr-test-input');
+        if (inp) {
+            inp.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') webRulesTestPath();
+            });
+        }
+    }
+})();

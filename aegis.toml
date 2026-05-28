@@ -144,6 +144,33 @@ scanner_agents = ["nikto", "sqlmap", "nmap", "masscan", "zgrab", "gobuster", "di
 # Add custom CDN/media mounts here if your app serves assets from non-standard paths.
 # ddos_static_paths = ["/cdn/", "/media/"]
 
+# --------------------------------------------------------------------------
+# v2.8.3 — per-endpoint DDoS thresholds
+# --------------------------------------------------------------------------
+# Each rule overrides ddos_threshold/ddos_high_traffic_threshold for paths
+# that match. Requests matching a rule are counted ONLY against that rule
+# (not the global thresholds). When multiple rules could match, the longest
+# matching `path` wins; on equal length, match_type = "exact" beats "prefix".
+#
+# Manage at runtime via the /web-rules WebUI page (add/remove/test, plus
+# automatic suggestion from access.log scans).
+#
+# Example:
+# [[web.endpoint_thresholds]]
+# path = "/api/positions/integrity"   # Next.js polling endpoint
+# threshold = 500
+# match_type = "exact"
+#
+# [[web.endpoint_thresholds]]
+# path = "/api/admin/"                # tighter ceiling for an admin namespace
+# threshold = 30
+# match_type = "prefix"
+#
+# [[web.endpoint_thresholds]]
+# path = "/api/login"                 # strict pinpoint, beats any /api/ prefix rule
+# threshold = 10
+# match_type = "exact"
+
 [threat_intel]
 enabled = true
 feed_dir = "~/.aegis/feeds"

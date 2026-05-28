@@ -89,6 +89,7 @@ pub async fn start_server(
         .route("/status", get(routes::status::status_page))
         .route("/config", get(routes::config::config_page))
         .route("/logs", get(routes::logs::logs_page))
+        .route("/web-rules", get(routes::web_rules::web_rules_page))
         // Health check (no auth)
         .route("/health", get(routes::dashboard::health))
         // API routes
@@ -148,6 +149,22 @@ pub async fn start_server(
         .route("/api/logs", get(routes::logs::api_logs))
         .route("/api/audit", get(routes::audit::api_audit))
         .route("/api/enrich/{ip}", get(routes::enrichment::api_enrich))
+        .route(
+            "/api/web-rules",
+            get(routes::web_rules::api_web_rules_list).post(routes::web_rules::api_web_rules_add),
+        )
+        .route(
+            "/api/web-rules/{idx}",
+            delete(routes::web_rules::api_web_rules_delete),
+        )
+        .route(
+            "/api/web-rules/test",
+            get(routes::web_rules::api_web_rules_test),
+        )
+        .route(
+            "/api/web-rules/suggest",
+            get(routes::web_rules::api_web_rules_suggest),
+        )
         .layer(middleware::from_fn_with_state(ctx.clone(), auth_middleware))
         .layer(RateLimitLayer::new(is_localhost))
         .layer(cors)

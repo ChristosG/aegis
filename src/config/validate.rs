@@ -265,6 +265,41 @@ fn validate_web(config: &AegisConfig, result: &mut ValidationResult) {
                 .to_string(),
         );
     }
+
+    // Per-endpoint thresholds: validate path, threshold, match_type, and duplicates.
+    let mut seen: std::collections::HashSet<(&str, &str)> = std::collections::HashSet::new();
+    for (i, ep) in config.web.endpoint_thresholds.iter().enumerate() {
+        if ep.path.trim().is_empty() {
+            result
+                .errors
+                .push(format!("[web.endpoint_thresholds[{}]] path is empty", i));
+            continue;
+        }
+        if !ep.path.starts_with('/') {
+            result.errors.push(format!(
+                "[web.endpoint_thresholds[{}]] path '{}' must start with '/'",
+                i, ep.path
+            ));
+        }
+        if ep.threshold == 0 {
+            result.errors.push(format!(
+                "[web.endpoint_thresholds[{}]] threshold for '{}' must be > 0",
+                i, ep.path
+            ));
+        }
+        if ep.match_type != "exact" && ep.match_type != "prefix" {
+            result.errors.push(format!(
+                "[web.endpoint_thresholds[{}]] match_type for '{}' must be \"exact\" or \"prefix\", got \"{}\"",
+                i, ep.path, ep.match_type
+            ));
+        }
+        if !seen.insert((ep.path.as_str(), ep.match_type.as_str())) {
+            result.errors.push(format!(
+                "[web.endpoint_thresholds[{}]] duplicate rule for path '{}' (match_type={})",
+                i, ep.path, ep.match_type
+            ));
+        }
+    }
 }
 
 fn validate_threat_intel(config: &AegisConfig, result: &mut ValidationResult) {

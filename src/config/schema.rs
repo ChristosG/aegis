@@ -582,6 +582,29 @@ pub struct WebConfig {
     /// traffic produces false positives on legitimate users.
     #[serde(default)]
     pub ddos_static_paths: Vec<String>,
+    /// Per-endpoint DDoS thresholds. Each rule overrides `ddos_threshold` /
+    /// `ddos_high_traffic_threshold` for requests whose path matches. When
+    /// multiple rules could match a path, the longest matching `path` wins;
+    /// on equal length, `match_type = "exact"` beats `"prefix"`.
+    /// Managed at runtime via the /web-rules WebUI page.
+    #[serde(default)]
+    pub endpoint_thresholds: Vec<EndpointThreshold>,
+}
+
+/// A per-endpoint DDoS threshold rule.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EndpointThreshold {
+    /// Request path to match (e.g. "/api/login", "/api/admin/").
+    pub path: String,
+    /// Requests per IP per minute allowed against this path.
+    pub threshold: u32,
+    /// "exact" — match `path` exactly; "prefix" — match any path starting with `path`.
+    #[serde(default = "default_match_type")]
+    pub match_type: String,
+}
+
+fn default_match_type() -> String {
+    "prefix".to_string()
 }
 
 impl Default for WebConfig {
@@ -608,6 +631,7 @@ impl Default for WebConfig {
             ddos_high_traffic_paths: Vec::new(),
             ddos_high_traffic_threshold: default_ddos_high_traffic_threshold(),
             ddos_static_paths: Vec::new(),
+            endpoint_thresholds: Vec::new(),
         }
     }
 }

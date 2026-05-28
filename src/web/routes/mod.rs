@@ -10,5 +10,6 @@ pub mod report;
 pub mod scan;
 pub mod status;
 pub mod threats;
+pub mod web_rules;
 pub mod whitelist;
 pub mod ws;

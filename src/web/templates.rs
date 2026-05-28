@@ -33,6 +33,7 @@ fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> 
         <a href="/status?token={token}" class="nav-link{status_active}">Status</a>
         <a href="/config?token={token}" class="nav-link{config_active}">Config</a>
         <a href="/logs?token={token}" class="nav-link{logs_active}">Logs</a>
+        <a href="/web-rules?token={token}" class="nav-link{web_rules_active}">Web Rules</a>
     </nav>
     <main class="content" role="main">
         <header class="top-bar">
@@ -93,6 +94,11 @@ fn page_wrapper(title: &str, content: &str, token: &str, current_page: &str) -> 
             ""
         },
         logs_active = if current_page == "logs" {
+            " active"
+        } else {
+            ""
+        },
+        web_rules_active = if current_page == "web_rules" {
             " active"
         } else {
             ""
@@ -497,6 +503,10 @@ pub fn render_config_page(content: &str, token: &str) -> String {
 
 pub fn render_logs_page(content: &str, token: &str) -> String {
     page_wrapper("Logs", content, token, "logs")
+}
+
+pub fn render_web_rules_page(content: &str, token: &str) -> String {
+    page_wrapper("Web Rules", content, token, "web_rules")
 }
 
 fn severity_class(sev: ThreatSeverity) -> &'static str {
